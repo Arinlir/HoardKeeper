@@ -5,6 +5,8 @@ market value move, record what you actually paid for boosters and precons, track
 completion, draft Commander and 60-card decks from what you own, and share the vault with
 your playgroup through named profiles.
 
+Main reason I had this constructed is because each tool I found was just lacking something. Certain box of mana is great for scanning, but clarity over my collection was just lacking(price tagging when I bought boosters and not just single cards, etc.)
+
 Runs in your browser against Scryfall's public API. Standalone it needs no account and no
 server — collections live in localStorage; the bundled Node server adds per-person profiles
 for a shared install. No telemetry either way.

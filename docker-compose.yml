@@ -1,0 +1,11 @@
+services:
+  hoardkeeper:
+    build: .
+    container_name: hoardkeeper
+    restart: unless-stopped
+    ports:
+      - "8420:8420"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Europe/Prague

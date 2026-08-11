@@ -83,8 +83,11 @@ If you later want the collection to follow you across machines, the storage laye
 ## Features
 
 **Adding cards.** Search by name against Scryfall and it fills in set, art, current price, colours, rarity and mana value. Optionally pin the set code to get a specific printing. Manual entry is there for anything Scryfall doesn't know about.
+<img width="379" height="752" alt="image" src="https://github.com/user-attachments/assets/fa0cd7b5-283a-4d9d-bc51-783ded251e00" />
 
 **Collections and cost basis.** Create a collection for a purchase — a Commander precon, a bundle, a booster box — and give it the total you paid. That cost is split evenly across the cards you assign to it, so every card carries a share of what the product cost. Override any individual card when the even split isn't right (the chase rare in a bundle, say), and the remainder redistributes across the rest automatically.
+
+<img width="1491" height="801" alt="image" src="https://github.com/user-attachments/assets/6cbf1700-0f37-4a54-aa2d-4bfc5425ebe1" />
 
 The **Collections** button in the header opens the manager: rename a collection, edit what you invested in it, see its current value and gain side by side, reset a total back to zero, or delete it (its cards fall back to Uncategorized). *Reset all invested* clears every total at once if you want to re-enter your cost basis from scratch.
 
@@ -100,9 +103,15 @@ Turn the lookup off and the import is instant and offline, using only what's in 
 
 **Decks.** The third tab is a Commander deck builder that works from what you own. Pick any legendary creature in your collection as commander and hit *Auto-build*: the drafter fetches your cards' rules text from Scryfall (cached locally), classifies every card in the commander's color identity by role — lands, ramp, draw, removal, board wipes — fills sensible quotas (37 lands, 10 ramp, 10 draw, 8 removal, 3 wipes), scores the rest by synergy with the commander's text and creature types, and tops up the mana base with basic lands split by your color pips. Singleton and color identity are enforced. The result lands in role columns you can prune by hand, with a search box to add anything in-identity from your collection, a running deck value, and one-click decklist export for Moxfield or Archidekt. Re-draft any time — it's a starting 100, not gospel: the drafter reads rules text, not the meta, so treat it as a fast first pass to tune at the table.
 
+<img width="614" height="316" alt="image" src="https://github.com/user-attachments/assets/5d02bd8f-0951-4e4d-8ce5-abede345a3ff" />
+
+
 A 60-card constructed mode sits alongside it: pick one or two colors instead of a commander, and the drafter builds toward 24 lands with up to four copies of a card — never more than you own — inferring a theme from your most common creature type. Deck rows get ×-count steppers, and export writes proper `4 Lightning Bolt` lines.
 
 **Charts.** Colour identity by value, your ten most valuable cards, paid-vs-worth per collection, value over time, mana curve, and value by rarity. All of them follow the active filter, so selecting one deck gives you that deck's curve.
+
+<img width="1165" height="650" alt="image" src="https://github.com/user-attachments/assets/0cb3bb52-7e24-4ca5-9e6e-5b3bc9e4c68e" />
+
 
 **Bulk editing.** *Select* switches the grid into selection mode. Select all shown, select everything, invert, or shift-click to grab a range. Then reassign collection, set a physical location, change condition or foil across the batch — or delete it.
 

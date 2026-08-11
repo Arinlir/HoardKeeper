@@ -162,3 +162,7 @@ MIT — see [LICENSE](LICENSE). Use it, fork it, host it for your playgroup.
 Magic: The Gathering is a trademark of Wizards of the Coast; this is an unaffiliated fan-made
 tool and includes no card images or text of its own — card data and prices are fetched at
 runtime courtesy of [Scryfall](https://scryfall.com).
+
+## Tips
+
+Feel free to support getting treats for my doggo. https://ko-fi.com/arinlir

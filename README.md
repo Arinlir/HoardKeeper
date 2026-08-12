@@ -107,8 +107,9 @@ Turn the lookup off and the import is instant and offline, using only what's in 
 
 <img width="614" height="316" alt="image" src="https://github.com/user-attachments/assets/5d02bd8f-0951-4e4d-8ce5-abede345a3ff" />
 
-
 A 60-card constructed mode sits alongside it: pick one or two colors instead of a commander, and the drafter builds toward 24 lands with up to four copies of a card — never more than you own — inferring a theme from your most common creature type. Deck rows get ×-count steppers, and export writes proper `4 Lightning Bolt` lines.
+
+**Glossary.** Explains what your cards actually do if they are using specific keywords. This is especially something for new players so they can easily access this information - Scry, tap/untapp, sacrifice, exile...
 
 **Charts.** Colour identity by value, your ten most valuable cards, paid-vs-worth per collection, value over time, mana curve, and value by rarity. All of them follow the active filter, so selecting one deck gives you that deck's curve.
 

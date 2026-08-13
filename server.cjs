@@ -63,7 +63,7 @@ function json(res, code, obj) {
 
 async function api(req, res, url) {
   // GET /api/health
-  if (url.pathname === "/api/health") return json(res, 200, { ok: true });
+  if (url.pathname === "/api/health") return json(res, 200, { ok: true, mode: "pin" });
 
   // GET /api/profiles → names only, never pins
   if (url.pathname === "/api/profiles" && req.method === "GET") {

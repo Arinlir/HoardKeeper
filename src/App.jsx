@@ -192,6 +192,14 @@ function normalizeCard(data) {
     scryfallUri: data.scryfall_uri || null,
     usd: data.prices?.usd ? parseFloat(data.prices.usd) : null,
     usdFoil: data.prices?.usd_foil ? parseFloat(data.prices.usd_foil) : null,
+    usdEtched: data.prices?.usd_etched ? parseFloat(data.prices.usd_etched) : null,
+    // which finishes this printing was actually made in
+    finishes: data.finishes || (data.foil ? ["nonfoil", "foil"] : ["nonfoil"]),
+    // treatments belong to the printing, not to your copy — shown, not chosen
+    frameEffects: data.frame_effects || [],
+    promoTypes: data.promo_types || [],
+    borderColor: data.border_color || null,
+    fullArt: !!data.full_art,
     eur: data.prices?.eur ? parseFloat(data.prices.eur) : null,
     eurFoil: data.prices?.eur_foil ? parseFloat(data.prices.eur_foil) : null,
     cmc: data.cmc ?? face?.cmc ?? 0,
@@ -200,6 +208,81 @@ function normalizeCard(data) {
     rarity: data.rarity || "",
     scryfallId: data.id,
   };
+}
+
+const FINISHES = [
+  { key: "nonfoil", label: "Normal" },
+  { key: "foil", label: "Foil" },
+  { key: "etched", label: "Etched" },
+];
+
+// Older cards only stored a boolean. Read through it so nothing needs migrating.
+function finishOf(card) {
+  if (card?.finish) return card.finish;
+  return card?.foil ? "foil" : "nonfoil";
+}
+
+function priceForFinish(card) {
+  const f = finishOf(card);
+  if (f === "foil") return card.usdFoil ?? card.usd ?? null;
+  if (f === "etched") return card.usdEtched ?? card.usdFoil ?? card.usd ?? null;
+  return card.usd ?? null;
+}
+
+// Which finishes this printing exists in. Unknown means we only have the older
+// data, so offer normal and foil rather than guessing.
+function availableFinishes(card) {
+  const f = card?.finishes;
+  if (Array.isArray(f) && f.length) return f;
+  return card?.usdEtched ? ["nonfoil", "foil", "etched"] : ["nonfoil", "foil"];
+}
+
+const FRAME_LABELS = {
+  showcase: "Showcase",
+  extendedart: "Extended art",
+  inverted: "Inverted",
+  legendary: "Legendary frame",
+  etched: "Etched frame",
+  fullart: "Full art",
+  colorshifted: "Colorshifted",
+  companion: "Companion",
+  miracle: "Miracle",
+  nyxtouched: "Nyx-touched",
+  devoid: "Devoid",
+  snow: "Snow",
+  shatteredglass: "Shattered glass",
+};
+
+const PROMO_LABELS = {
+  serialized: "Serialized",
+  surgefoil: "Surge foil",
+  galaxyfoil: "Galaxy foil",
+  halofoil: "Halo foil",
+  textured: "Textured foil",
+  oilslick: "Oil slick",
+  confettifoil: "Confetti foil",
+  gilded: "Gilded",
+  stepandcompleat: "Step-and-compleat",
+  neonink: "Neon ink",
+  raisedfoil: "Raised foil",
+  ripplefoil: "Ripple foil",
+  doublerainbow: "Double rainbow",
+  prerelease: "Prerelease",
+  promopack: "Promo pack",
+};
+
+// Human-readable tags describing the printing you own. Derived from Scryfall,
+// so they're shown rather than chosen — a borderless card is a different
+// printing with its own collector number, not a checkbox on this one.
+function treatmentTags(card) {
+  const out = [];
+  (card.frameEffects || []).forEach((f) => out.push(FRAME_LABELS[f] || f));
+  if (card.borderColor === "borderless") out.push("Borderless");
+  if (card.fullArt) out.push("Full art");
+  (card.promoTypes || []).forEach((p) => {
+    if (PROMO_LABELS[p]) out.push(PROMO_LABELS[p]);
+  });
+  return [...new Set(out)];
 }
 
 function uid() {
@@ -219,6 +302,16 @@ const store = {
     this.pin = pin || "";
   },
   async get(key) {
+    if (this.mode === "accounts") {
+      const res = await fetch("/api/store", {
+        credentials: "same-origin",
+        headers: { "x-hk-app": "1" },
+      });
+      if (res.status === 401) throw new Error("signed-out");
+      if (!res.ok) throw new Error("store get failed");
+      const d = await res.json();
+      return d.value === null ? null : { key, value: d.value };
+    }
     if (this.mode === "server" && this.profile) {
       const res = await fetch(`/api/store/${this.profile}`, {
         headers: { "x-pin": this.pin },
@@ -232,6 +325,15 @@ const store = {
     return value === null ? null : { key, value };
   },
   async set(key, value) {
+    if (this.mode === "accounts") {
+      const res = await fetch("/api/store", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-hk-app": "1" },
+        credentials: "same-origin",
+        body: JSON.stringify({ value }),
+      });
+      return res.ok ? { key, value } : null;
+    }
     if (this.mode === "server" && this.profile) {
       const res = await fetch(`/api/store/${this.profile}`, {
         method: "PUT",
@@ -313,6 +415,9 @@ export default function App() {
   // boot: checking -> gate (server, no profile yet) -> ready
   const [boot, setBoot] = useState("checking");
   const [serverMode, setServerMode] = useState(false);
+  const [authMode, setAuthMode] = useState("pin");
+  const [account, setAccount] = useState(null);
+  const [registrationOpen, setRegistrationOpen] = useState(true);
   const [saveError, setSaveError] = useState(false);
 
   const [activeFilter, setActiveFilter] = useState("all");
@@ -353,6 +458,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       let onServer = false;
+      let mode = "pin";
       try {
         const ctl = new AbortController();
         const t = setTimeout(() => ctl.abort(), 1500);
@@ -363,11 +469,31 @@ export default function App() {
         if (res.ok) {
           const d = await res.json();
           onServer = d && d.ok === true;
+          // the server tells us which sign-in it runs
+          mode = d?.mode === "accounts" ? "accounts" : "pin";
+          setRegistrationOpen(d?.registration !== false);
         }
       } catch (e) {}
       setServerMode(onServer);
+      setAuthMode(mode);
       if (!onServer) {
         setBoot("ready");
+        return;
+      }
+      if (mode === "accounts") {
+        try {
+          const me = await fetch("/api/auth/me", { credentials: "same-origin" });
+          if (me.ok) {
+            const d = await me.json();
+            setAccount(d.user);
+            store.configure("accounts");
+            setBoot("ready");
+          } else {
+            setBoot("auth");
+          }
+        } catch (e) {
+          setBoot("auth");
+        }
         return;
       }
       let saved = null;
@@ -499,8 +625,7 @@ export default function App() {
     if (card.valueOverride !== null && card.valueOverride !== undefined) {
       return card.valueOverride;
     }
-    if (card.foil && card.usdFoil !== null && card.usdFoil !== undefined) return card.usdFoil;
-    return card.usd ?? 0;
+    return priceForFinish(card) ?? 0;
   }
 
   function saleProceeds(card) {
@@ -584,6 +709,7 @@ export default function App() {
         imageUrlLarge: cardData.imageUrlLarge || null,
         scryfallUri: cardData.scryfallUri || null,
         quantity: cardData.quantity || 1,
+        finish: cardData.finish || (cardData.foil ? "foil" : "nonfoil"),
         foil: !!cardData.foil,
         condition: cardData.condition || "NM",
         collectionId: cardData.collectionId || UNCATEGORIZED,
@@ -808,6 +934,7 @@ export default function App() {
         imageUrlLarge: entry.imageUrlLarge,
         scryfallUri: entry.scryfallUri,
         quantity: 1,
+        finish: "nonfoil",
         foil: false,
         condition: "NM",
         collectionId: collectionId || UNCATEGORIZED,
@@ -854,8 +981,9 @@ export default function App() {
       if (card.sold) return skipped.push({ name: card.name, reason: "marked sold" });
       if (!(card.colors || []).every((c) => identity.includes(c)))
         return skipped.push({ name: card.name, reason: `outside ${identity.join("") || "colorless"} identity` });
+      const free = isBasicLand(card);
       if (ids.has(card.id)) return skipped.push({ name: card.name, reason: "already in deck" });
-      if (!isStd && names.has(card.name))
+      if (!isStd && !free && names.has(card.name))
         return skipped.push({ name: card.name, reason: "singleton" });
       ids.add(card.id);
       names.add(card.name);
@@ -928,9 +1056,16 @@ export default function App() {
   function exportCsv() {
     const rows = cards.map((c) => ({
       Name: c.name,
-      Set: c.set,
+      // Set code plus collector number names one exact printing; the Scryfall
+      // ID pins it beyond doubt. Without these a re-import has to guess from
+      // the name alone and can land on the wrong art and the wrong price.
+      Set: (c.set || "").toUpperCase(),
+      "Collector Number": c.collectorNumber || "",
+      "Set Name": c.setName || "",
+      "Scryfall ID": c.scryfallId || "",
+      Rarity: c.rarity || "",
       Quantity: c.quantity,
-      Foil: c.foil ? "Yes" : "No",
+      Finish: finishOf(c),
       Condition: c.condition,
       Collection: collectionName(c.collectionId),
       Location: c.location || "",
@@ -974,6 +1109,19 @@ export default function App() {
         Opening the vault…
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
+    );
+  }
+
+  if (boot === "auth") {
+    return (
+      <AuthGate
+        registrationOpen={registrationOpen}
+        onSignedIn={(user) => {
+          setAccount(user);
+          store.configure("accounts");
+          setBoot("ready");
+        }}
+      />
     );
   }
 
@@ -1188,6 +1336,7 @@ export default function App() {
       ) : view === "decks" ? (
         <DecksView
           cards={cards}
+          collections={collections}
           decks={decks}
           setDecks={setDecks}
           valueOf={(c) => currentUnitValue(c) * (c.quantity || 1)}
@@ -1283,6 +1432,8 @@ export default function App() {
       {showSettings && (
         <SettingsModal
           serverMode={serverMode}
+          authMode={authMode}
+          account={account}
           currency={currency}
           setCurrency={setCurrency}
           czkRate={czkRate}
@@ -1297,6 +1448,9 @@ export default function App() {
 
       {showAddCard && (
         <AddCardModal
+          defaultCollectionId={
+            activeFilter !== "all" && activeFilter !== SOLD ? activeFilter : UNCATEGORIZED
+          }
           collections={collections}
           cards={cards}
           allocationPreview={allocationPreview}
@@ -1920,8 +2074,9 @@ function Analytics({ rows, history }) {
     return rows
       .map((r) => {
         const c = r.card;
-        const prev = c.foil ? c.prevUsdFoil : c.prevUsd;
-        const now = c.foil ? c.usdFoil : c.usd;
+        const shiny = finishOf(c) !== "nonfoil";
+        const prev = shiny ? c.prevUsdFoil : c.prevUsd;
+        const now = shiny ? c.usdFoil : c.usd;
         if (prev === null || prev === undefined || !now || prev === 0) return null;
         const qty = c.quantity || 1;
         return {
@@ -2364,7 +2519,7 @@ function CardTile({ card, collectionName, cost, value, onClick, selectMode, sele
         )}
         <CardArt card={card} />
 
-        {card.foil && (
+        {finishOf(card) !== "nonfoil" && (
           <>
             <div className="foil-sheen" />
             <div className="foil-edge" />
@@ -2527,7 +2682,9 @@ function CardTile({ card, collectionName, cost, value, onClick, selectMode, sele
 async function fetchOracleTexts(scryfallIds) {
   let cache = {};
   try {
-    cache = JSON.parse(localStorage.getItem("lf-oracle-cache")) || {};
+    // v2 also records the tokens each card makes, so the key is bumped to
+    // force one refetch rather than silently serving incomplete entries.
+    cache = JSON.parse(localStorage.getItem("lf-oracle-v2")) || {};
   } catch (e) {}
   const missing = scryfallIds.filter((id) => id && !cache[id]);
   for (let i = 0; i < missing.length; i += 75) {
@@ -2538,7 +2695,15 @@ async function fetchOracleTexts(scryfallIds) {
         const text =
           raw.oracle_text ||
           (raw.card_faces || []).map((f) => f.oracle_text || "").join("\n");
-        cache[raw.id] = { t: text || "", ty: raw.type_line || "" };
+        cache[raw.id] = {
+          t: text || "",
+          ty: raw.type_line || "",
+          // Scryfall lists related cards; the token ones are what a deck needs
+          // to have on hand.
+          parts: (raw.all_parts || [])
+            .filter((p) => p.component === "token")
+            .map((p) => ({ id: p.id, name: p.name, ty: p.type_line || "" })),
+        };
       });
     } catch (e) {
       // leave missing; drafter degrades gracefully
@@ -2546,7 +2711,42 @@ async function fetchOracleTexts(scryfallIds) {
     await sleep(RATE_MS);
   }
   try {
-    localStorage.setItem("lf-oracle-cache", JSON.stringify(cache));
+    localStorage.setItem("lf-oracle-v2", JSON.stringify(cache));
+  } catch (e) {}
+  return cache;
+}
+
+// Token cards themselves, for artwork. Cached separately and indefinitely —
+// token printings don't change.
+async function fetchTokenCards(ids) {
+  let cache = {};
+  try {
+    cache = JSON.parse(localStorage.getItem("lf-tokens")) || {};
+  } catch (e) {}
+  const missing = ids.filter((id) => id && !cache[id]);
+  for (let i = 0; i < missing.length; i += 75) {
+    const chunk = missing.slice(i, i + 75);
+    try {
+      const data = await scryfallCollection(chunk.map((id) => ({ id })));
+      (data.data || []).forEach((raw) => {
+        const c = normalizeCard(raw);
+        cache[raw.id] = {
+          name: c.name,
+          typeLine: c.typeLine,
+          imageUrl: c.imageUrl,
+          set: c.set,
+          collectorNumber: c.collectorNumber,
+          scryfallUri: c.scryfallUri,
+          power: raw.power ?? null,
+          toughness: raw.toughness ?? null,
+          colors: c.colors,
+        };
+      });
+    } catch (e) {}
+    await sleep(RATE_MS);
+  }
+  try {
+    localStorage.setItem("lf-tokens", JSON.stringify(cache));
   } catch (e) {}
   return cache;
 }
@@ -2605,7 +2805,21 @@ const ROLE_LABELS = {
 const ROLE_ORDER = ["land", "ramp", "draw", "removal", "wipe", "creature", "other"];
 
 // The drafter: fills role quotas from the pool, then the rest by synergy and curve.
-function draftDeck(commander, pool, oracle) {
+// Commander is singleton with two exceptions: basic lands, and cards whose text
+// explicitly allows any number ("A deck can have any number of cards named…",
+// e.g. Rat Colony, Persistent Petitioners, Dragon's Approach).
+function isBasicLand(card) {
+  return /\bbasic\b/i.test(card?.typeLine || "") && /\bland\b/i.test(card?.typeLine || "");
+}
+
+function allowsAnyNumber(card, oracleText) {
+  if (isBasicLand(card)) return true;
+  return /a deck can have any number of cards named/i.test(oracleText || "");
+}
+
+// `freeCopies(card)` reports how many copies aren't already committed to another
+// deck. Defaults to "everything is available" so the function stays testable.
+function draftDeck(commander, pool, oracle, freeCopies = () => Infinity) {
   const identity = commander.colors || [];
   const cText = oracle[commander.scryfallId]?.t || "";
   const cTypes = commander.typeLine || "";
@@ -2616,7 +2830,9 @@ function draftDeck(commander, pool, oracle) {
         !c.sold &&
         c.id !== commander.id &&
         c.scryfallId &&
-        identityFits(c, identity)
+        identityFits(c, identity) &&
+        // don't draft a card that's already sleeved in another deck
+        freeCopies(c) > 0
     )
     .map((c) => {
       const text = oracle[c.scryfallId]?.t || "";
@@ -2627,14 +2843,15 @@ function draftDeck(commander, pool, oracle) {
       };
     });
 
-  // singleton by name
+  // singleton by name, except basics and "any number" cards
   const seen = new Set([commander.name]);
   const unique = [];
   candidates
     .sort((a, b) => b.syn - a.syn)
     .forEach((x) => {
-      if (!seen.has(x.card.name)) {
-        seen.add(x.card.name);
+      const free = allowsAnyNumber(x.card, oracle[x.card.scryfallId]?.t);
+      if (free || !seen.has(x.card.name)) {
+        if (!free) seen.add(x.card.name);
         unique.push(x);
       }
     });
@@ -2707,13 +2924,25 @@ function draftDeck(commander, pool, oracle) {
 // 60-card constructed drafter. No commander: you pick the colors, it builds
 // 24 lands / ~24 creatures / spells, allowing up to 4 copies but never more
 // than you own. Theme is inferred from your most common creature type.
-function draftDeck60(colors, pool, oracle) {
+function draftDeck60(colors, pool, oracle, freeCopies = () => Infinity) {
   const identity = colors;
   const candidates = pool
-    .filter((c) => !c.sold && identityFits(c, identity) && !(c.typeLine || "").toLowerCase().includes("basic land"))
+    .filter(
+      (c) =>
+        !c.sold &&
+        identityFits(c, identity) &&
+        !(c.typeLine || "").toLowerCase().includes("basic land") &&
+        freeCopies(c) > 0
+    )
     .map((c) => {
       const text = oracle[c.scryfallId]?.t || "";
-      return { card: c, role: classifyRole(c, text), text, maxQty: Math.min(4, c.quantity || 1) };
+      return {
+        card: c,
+        role: classifyRole(c, text),
+        text,
+        // four of a card, but never more than you have free
+        maxQty: Math.min(4, c.quantity || 1, freeCopies(c)),
+      };
     });
 
   // theme: the most common creature subtype in the candidate pool
@@ -2798,6 +3027,395 @@ function draftDeck60(colors, pool, oracle) {
     shortfall: Math.max(0, 60 - spellCount - landsPicked - basicsNeeded),
     theme,
   };
+}
+
+/* ============================================================
+   ACCOUNT GATE — email + password, used when the server runs
+   in accounts mode. PIN installs never see this.
+   ============================================================ */
+
+async function authPost(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-hk-app": "1" },
+    credentials: "same-origin",
+    body: JSON.stringify(body || {}),
+  });
+  let data = {};
+  try {
+    data = await res.json();
+  } catch (e) {}
+  return { ok: res.ok, status: res.status, data };
+}
+
+function AuthGate({ onSignedIn, registrationOpen }) {
+  // signin | register | forgot | reset | sent | verify-needed
+  const params = new URLSearchParams(window.location.search);
+  const resetToken = params.get("reset");
+  const verifiedFlag = params.get("verified");
+
+  const [view, setView] = useState(resetToken ? "reset" : "signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [password2, setPassword2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [note, setNote] = useState(
+    verifiedFlag === "1"
+      ? "Email confirmed — you can sign in now."
+      : verifiedFlag === "0"
+      ? "That confirmation link has expired. Sign in and we'll send a new one."
+      : ""
+  );
+
+  function clearQuery() {
+    window.history.replaceState({}, "", window.location.pathname);
+  }
+
+  async function signIn() {
+    setBusy(true);
+    setError("");
+    const { ok, status, data } = await authPost("/api/auth/login", { email, password });
+    setBusy(false);
+    if (ok) {
+      clearQuery();
+      return onSignedIn(data.user);
+    }
+    if (status === 403 && data.error === "unverified") {
+      setView("verify-needed");
+      return;
+    }
+    setError(data.error || "Couldn't sign in.");
+  }
+
+  async function register() {
+    if (password !== password2) return setError("The two passwords don't match.");
+    setBusy(true);
+    setError("");
+    const { ok, data } = await authPost("/api/auth/register", { email, password });
+    setBusy(false);
+    if (!ok) return setError(data.error || "Couldn't create the account.");
+    setNote("");
+    setView("sent");
+  }
+
+  async function forgot() {
+    setBusy(true);
+    setError("");
+    await authPost("/api/auth/forgot", { email });
+    setBusy(false);
+    setView("sent-reset");
+  }
+
+  async function doReset() {
+    if (password !== password2) return setError("The two passwords don't match.");
+    setBusy(true);
+    setError("");
+    const { ok, data } = await authPost("/api/auth/reset", { token: resetToken, password });
+    setBusy(false);
+    if (!ok) return setError(data.error || "Couldn't reset the password.");
+    clearQuery();
+    setPassword("");
+    setPassword2("");
+    setNote("Password changed — sign in with it now.");
+    setView("signin");
+  }
+
+  async function resend() {
+    setBusy(true);
+    await authPost("/api/auth/resend", { email });
+    setBusy(false);
+    setNote("If that address needs confirming, a new link is on its way.");
+  }
+
+  const input = {
+    width: "100%",
+    background: C.bgPanel2,
+    border: `1px solid ${C.border}`,
+    borderRadius: 6,
+    padding: "11px 12px",
+    color: C.parchment,
+    fontSize: 14,
+    marginBottom: 10,
+  };
+  const primary = {
+    width: "100%",
+    background: `linear-gradient(180deg, ${C.stock}, ${C.stockDark})`,
+    color: C.stockInk,
+    border: "none",
+    borderRadius: 6,
+    padding: "12px",
+    fontWeight: 700,
+    fontSize: 14.5,
+    cursor: busy ? "default" : "pointer",
+    boxShadow: "inset 0 0 0 1px rgba(40,44,50,0.4), 0 2px 0 rgba(0,0,0,0.35)",
+    opacity: busy ? 0.7 : 1,
+  };
+  const link = {
+    background: "none",
+    border: "none",
+    color: C.parchmentDim,
+    fontSize: 12.5,
+    cursor: "pointer",
+    textDecoration: "underline",
+    padding: 4,
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: `radial-gradient(ellipse 130% 90% at 50% -20%, #232629 0%, ${C.bg} 55%, #121417 100%)`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: "'Archivo', sans-serif",
+        padding: 20,
+      }}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Spectral:wght@500;600&family=Archivo:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
+      `}</style>
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 380,
+          border: "1px solid rgba(185,191,199,0.3)",
+          borderRadius: 14,
+          padding: 28,
+          position: "relative",
+          boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.6), inset 0 0 60px rgba(0,0,0,0.3)",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            inset: 7,
+            borderRadius: 9,
+            border: "1.5px dashed rgba(185,191,199,0.3)",
+            pointerEvents: "none",
+          }}
+        />
+        <h1
+          style={{
+            fontFamily: "'Cinzel', serif",
+            fontWeight: 700,
+            fontSize: 23,
+            letterSpacing: 1.5,
+            color: C.goldBright,
+            margin: "0 0 6px",
+            textAlign: "center",
+          }}
+        >
+          HOARDKEEPER
+        </h1>
+        <div
+          style={{
+            fontFamily: "'IBM Plex Mono', monospace",
+            fontSize: 9.5,
+            letterSpacing: 2,
+            textTransform: "uppercase",
+            color: C.parchmentDim,
+            textAlign: "center",
+            marginBottom: 22,
+          }}
+        >
+          {view === "register"
+            ? "Create your vault"
+            : view === "forgot"
+            ? "Recover your account"
+            : view === "reset"
+            ? "Choose a new password"
+            : "Sign in to your vault"}
+        </div>
+
+        {note && (
+          <div style={{ fontSize: 12.5, color: C.greenBright, marginBottom: 12, lineHeight: 1.5 }}>
+            {note}
+          </div>
+        )}
+        {error && (
+          <div style={{ fontSize: 12.5, color: C.redBright, marginBottom: 12, lineHeight: 1.5 }}>
+            {error}
+          </div>
+        )}
+
+        {view === "signin" && (
+          <>
+            <input
+              style={input}
+              type="email"
+              autoComplete="username"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <input
+              style={input}
+              type="password"
+              autoComplete="current-password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && signIn()}
+            />
+            <button style={primary} onClick={signIn} disabled={busy}>
+              {busy ? "…" : "Sign in"}
+            </button>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10 }}>
+              <button style={link} onClick={() => { setView("forgot"); setError(""); }}>
+                Forgot password
+              </button>
+              {registrationOpen && (
+                <button style={link} onClick={() => { setView("register"); setError(""); setNote(""); }}>
+                  Create account
+                </button>
+              )}
+            </div>
+          </>
+        )}
+
+        {view === "register" && (
+          <>
+            <input
+              style={input}
+              type="email"
+              autoComplete="username"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <input
+              style={input}
+              type="password"
+              autoComplete="new-password"
+              placeholder="Password (10+ characters)"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <input
+              style={input}
+              type="password"
+              autoComplete="new-password"
+              placeholder="Repeat password"
+              value={password2}
+              onChange={(e) => setPassword2(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && register()}
+            />
+            <button style={primary} onClick={register} disabled={busy}>
+              {busy ? "…" : "Create account"}
+            </button>
+            <div
+              style={{
+                fontFamily: "'IBM Plex Mono', monospace",
+                fontSize: 10,
+                color: C.parchmentDim,
+                marginTop: 10,
+                lineHeight: 1.5,
+              }}
+            >
+              A long phrase beats a short jumble. We'll email you a link to confirm the address.
+            </div>
+            <button style={{ ...link, marginTop: 8 }} onClick={() => { setView("signin"); setError(""); }}>
+              ← Back to sign in
+            </button>
+          </>
+        )}
+
+        {view === "forgot" && (
+          <>
+            <input
+              style={input}
+              type="email"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && forgot()}
+            />
+            <button style={primary} onClick={forgot} disabled={busy}>
+              {busy ? "…" : "Send reset link"}
+            </button>
+            <button style={{ ...link, marginTop: 10 }} onClick={() => { setView("signin"); setError(""); }}>
+              ← Back to sign in
+            </button>
+          </>
+        )}
+
+        {view === "reset" && (
+          <>
+            <input
+              style={input}
+              type="password"
+              autoComplete="new-password"
+              placeholder="New password (10+ characters)"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <input
+              style={input}
+              type="password"
+              autoComplete="new-password"
+              placeholder="Repeat new password"
+              value={password2}
+              onChange={(e) => setPassword2(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && doReset()}
+            />
+            <button style={primary} onClick={doReset} disabled={busy}>
+              {busy ? "…" : "Set new password"}
+            </button>
+            <div
+              style={{
+                fontFamily: "'IBM Plex Mono', monospace",
+                fontSize: 10,
+                color: C.parchmentDim,
+                marginTop: 10,
+                lineHeight: 1.5,
+              }}
+            >
+              This signs you out everywhere else.
+            </div>
+          </>
+        )}
+
+        {view === "sent" && (
+          <div style={{ fontSize: 13.5, color: C.parchment, lineHeight: 1.6 }}>
+            Check <b>{email}</b> for a confirmation link. It's valid for 24 hours.
+            <div style={{ marginTop: 14 }}>
+              <button style={link} onClick={() => { setView("signin"); setNote(""); }}>
+                ← Back to sign in
+              </button>
+            </div>
+          </div>
+        )}
+
+        {view === "sent-reset" && (
+          <div style={{ fontSize: 13.5, color: C.parchment, lineHeight: 1.6 }}>
+            If an account exists for <b>{email}</b>, a reset link is on its way. It's valid for one
+            hour.
+            <div style={{ marginTop: 14 }}>
+              <button style={link} onClick={() => { setView("signin"); setNote(""); }}>
+                ← Back to sign in
+              </button>
+            </div>
+          </div>
+        )}
+
+        {view === "verify-needed" && (
+          <div style={{ fontSize: 13.5, color: C.parchment, lineHeight: 1.6 }}>
+            This account still needs its email confirmed. Check your inbox for the link.
+            <div style={{ display: "flex", gap: 10, marginTop: 14, alignItems: "center" }}>
+              <button style={link} onClick={resend} disabled={busy}>
+                Send another link
+              </button>
+              <button style={link} onClick={() => { setView("signin"); setError(""); }}>
+                ← Back
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /* ============================================================
@@ -3329,6 +3947,797 @@ function GlossaryView({ cards }) {
   );
 }
 
+/* ============================================================
+   DECK LISTS — import and export
+   ============================================================ */
+
+function downloadFile(filename, text, type = "text/plain;charset=utf-8") {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const DECK_BASICS = ["Plains", "Island", "Swamp", "Mountain", "Forest", "Wastes"];
+const DECK_SECTIONS =
+  /^(deck|main(deck|board)?|commander|companion|sideboard|maybe(board)?|tokens?|considering)\b/i;
+
+// Parses a pasted decklist. Handles the common exports — Moxfield, Archidekt,
+// MTGO/Arena — and plain "4 Lightning Bolt" lists.
+function parseDecklist(text) {
+  const out = { commander: null, entries: [], basics: {}, ignored: [], sideboard: [] };
+  let section = "deck";
+
+  String(text || "")
+    .split(/\r?\n/)
+    .forEach((raw) => {
+      const line = raw.trim();
+      if (!line) return;
+      if (/^(\/\/|#)/.test(line)) return; // comments, including our own token block
+      const head = line.replace(/[:(].*$/, "").trim();
+      if (DECK_SECTIONS.test(head) && !/^\d/.test(line)) {
+        section = head.toLowerCase();
+        return;
+      }
+
+      // 4 Lightning Bolt (2X2) 117 *F* *CMDR*
+      const m = line.match(
+        /^(\d+)?\s*[xX]?\s*(.+?)\s*(?:\(([A-Za-z0-9]{2,6})\)\s*([A-Za-z0-9-★]+)?)?\s*((?:\*[^*]+\*\s*)*)$/
+      );
+      if (!m) {
+        out.ignored.push(line);
+        return;
+      }
+      const qty = parseInt(m[1] || "1", 10);
+      const tags = (m[5] || "").toLowerCase();
+      // double-faced cards export as "Front // Back"
+      const name = (m[2] || "").split("//")[0].trim();
+      if (!name) {
+        out.ignored.push(line);
+        return;
+      }
+
+      const rec = {
+        qty,
+        name,
+        set: m[3] ? m[3].toLowerCase() : null,
+        num: m[4] || null,
+        foil: /\*f\*|foil/.test(tags),
+      };
+
+      if ((tags.includes("cmdr") || section === "commander") && !out.commander) {
+        out.commander = rec;
+        return;
+      }
+      if (section.startsWith("side") || section.startsWith("maybe") || section === "considering") {
+        out.sideboard.push(rec);
+        return;
+      }
+      if (section.startsWith("token")) return;
+
+      const basic = DECK_BASICS.find((b) => b.toLowerCase() === name.toLowerCase());
+      if (basic) {
+        out.basics[basic] = (out.basics[basic] || 0) + qty;
+        return;
+      }
+      out.entries.push(rec);
+    });
+
+  return out;
+}
+
+// Pairs parsed lines with cards you own. Prefers the exact printing when the
+// list names one, then any copy not committed to another deck.
+function matchDecklist(parsed, cards, committed = {}) {
+  const byName = {};
+  cards
+    .filter((c) => !c.sold)
+    .forEach((c) => {
+      const k = c.name.toLowerCase();
+      (byName[k] = byName[k] || []).push(c);
+    });
+
+  const used = {};
+  const entries = [];
+  const missing = [];
+  const partial = [];
+
+  const freeCopies = (c) => (c.quantity || 1) - (committed[c.id] || 0) - (used[c.id] || 0);
+
+  // Returns the card ids claimed, in order.
+  function claim(rec, limit) {
+    const pool = byName[rec.name.toLowerCase()] || [];
+    const exact = pool.filter(
+      (c) =>
+        rec.set &&
+        c.set?.toLowerCase() === rec.set &&
+        (!rec.num || String(c.collectorNumber) === String(rec.num))
+    );
+    const order = [...exact, ...pool.filter((c) => !exact.includes(c))];
+    const taken = [];
+    let need = limit ?? rec.qty;
+    for (const c of order) {
+      if (need <= 0) break;
+      const avail = Math.max(0, freeCopies(c));
+      if (avail <= 0) continue;
+      const take = Math.min(avail, need);
+      used[c.id] = (used[c.id] || 0) + take;
+      taken.push({ id: c.id, take });
+      need -= take;
+    }
+    return taken;
+  }
+
+  // Commander first, so it gets the copy it names.
+  let commanderId = null;
+  if (parsed.commander) {
+    const got = claim(parsed.commander, 1);
+    if (got.length) commanderId = got[0].id;
+    else missing.push({ ...parsed.commander, have: 0, isCommander: true });
+  }
+
+  parsed.entries.forEach((rec) => {
+    const got = claim(rec);
+    const total = got.reduce((n, g) => n + g.take, 0);
+    got.forEach((g) => {
+      const existing = entries.find((e) => e.cardId === g.id);
+      if (existing) existing.qty += g.take;
+      else entries.push({ cardId: g.id, qty: g.take, role: "other" });
+    });
+    if (total === 0) missing.push({ ...rec, have: 0 });
+    else if (total < rec.qty) partial.push({ ...rec, have: total });
+  });
+
+  return { entries, commanderId, basics: { ...parsed.basics }, missing, partial };
+}
+
+// Plain-text decklist, the format every deckbuilder understands.
+function deckToText(deck, cardById, commander, tokens, tokenQty) {
+  const lines = [];
+  if (commander) {
+    lines.push("Commander");
+    lines.push(
+      `1 ${commander.name}${commander.set ? ` (${commander.set.toUpperCase()}) ${commander.collectorNumber || ""}`.trimEnd() : ""}`
+    );
+    lines.push("");
+    lines.push("Deck");
+  }
+  deck.entries.forEach((e) => {
+    const c = cardById[e.cardId];
+    if (!c) return;
+    const printing = c.set ? ` (${c.set.toUpperCase()}) ${c.collectorNumber || ""}`.trimEnd() : "";
+    lines.push(`${e.qty || 1} ${c.name}${printing}`);
+  });
+  Object.entries(deck.basics || {}).forEach(([name, n]) => lines.push(`${n} ${name}`));
+  const wanted = (tokens || []).filter((t) => tokenQty(t.id) > 0);
+  if (wanted.length) {
+    lines.push("");
+    lines.push("// Tokens needed:");
+    wanted.forEach((t) => lines.push(`// ${tokenQty(t.id)} ${t.name}${t.ty ? ` (${t.ty})` : ""}`));
+  }
+  return lines.join("\n");
+}
+
+// Full fidelity: keeps the printing of every card, so a re-import is exact.
+function deckToJson(deck, cardById, commander) {
+  return JSON.stringify(
+    {
+      hoardkeeper: 1,
+      name: deck.name,
+      format: deck.format || "commander",
+      colors: deck.colors || null,
+      exported: new Date().toISOString(),
+      commander: commander
+        ? { name: commander.name, set: commander.set, collectorNumber: commander.collectorNumber }
+        : null,
+      cards: deck.entries
+        .map((e) => {
+          const c = cardById[e.cardId];
+          if (!c) return null;
+          return {
+            qty: e.qty || 1,
+            name: c.name,
+            set: c.set,
+            collectorNumber: c.collectorNumber,
+            finish: finishOf(c),
+            role: e.role,
+          };
+        })
+        .filter(Boolean),
+      basics: deck.basics || {},
+      tokenCounts: deck.tokenCounts || {},
+      extraTokens: deck.extraTokens || [],
+    },
+    null,
+    2
+  );
+}
+
+// A HoardKeeper JSON export, converted back into the parser's shape.
+function jsonToParsed(json) {
+  const d = JSON.parse(json);
+  if (!d || !Array.isArray(d.cards)) throw new Error("Not a HoardKeeper deck file");
+  return {
+    meta: { name: d.name, format: d.format, colors: d.colors, tokenCounts: d.tokenCounts, extraTokens: d.extraTokens },
+    commander: d.commander
+      ? { qty: 1, name: d.commander.name, set: d.commander.set, num: d.commander.collectorNumber }
+      : null,
+    entries: d.cards.map((c) => ({
+      qty: c.qty || 1,
+      name: c.name,
+      set: c.set || null,
+      num: c.collectorNumber || null,
+    })),
+    basics: d.basics || {},
+    ignored: [],
+    sideboard: [],
+  };
+}
+
+function ImportDeckModal({ cards, committed, onClose, onImport }) {
+  const [text, setText] = useState("");
+  const [name, setName] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [meta, setMeta] = useState(null);
+  const [error, setError] = useState("");
+
+  function analyse(source, fileName) {
+    setError("");
+    const raw = source.trim();
+    if (!raw) return;
+    let parsed;
+    let m = null;
+    try {
+      if (raw.startsWith("{")) {
+        const j = jsonToParsed(raw);
+        parsed = j;
+        m = j.meta;
+      } else {
+        parsed = parseDecklist(raw);
+      }
+    } catch (e) {
+      setError(e.message || "Couldn't read that list.");
+      return;
+    }
+    const matched = matchDecklist(parsed, cards, committed);
+    setMeta(m);
+    setPreview({ ...matched, parsed });
+    if (!name) {
+      setName(
+        m?.name ||
+          (fileName ? fileName.replace(/\.(txt|json|dec|dek)$/i, "") : "") ||
+          "Imported deck"
+      );
+    }
+  }
+
+  function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const content = String(reader.result || "");
+      setText(content);
+      analyse(content, file.name);
+    };
+    reader.readAsText(file);
+  }
+
+  const totalWanted =
+    preview?.parsed.entries.reduce((n, e) => n + e.qty, 0) +
+    Object.values(preview?.parsed.basics || {}).reduce((n, v) => n + v, 0) +
+    (preview?.parsed.commander ? 1 : 0);
+  const totalMatched =
+    (preview?.entries.reduce((n, e) => n + e.qty, 0) || 0) +
+    Object.values(preview?.basics || {}).reduce((n, v) => n + v, 0) +
+    (preview?.commanderId ? 1 : 0);
+
+  const inputS = {
+    width: "100%",
+    background: C.bgPanel2,
+    border: `1px solid ${C.border}`,
+    borderRadius: 6,
+    padding: "10px 12px",
+    color: C.parchment,
+    fontSize: 13,
+  };
+
+  return (
+    <ModalShell title="Import a deck" onClose={onClose} width={620}>
+      <p style={{ fontSize: 12.5, color: C.parchmentDim, marginTop: 0, lineHeight: 1.6 }}>
+        Paste a decklist from Moxfield, Archidekt, Arena or anywhere else — or load a{" "}
+        <span className="mono">.txt</span> / HoardKeeper <span className="mono">.json</span> file.
+        Cards are matched against what you own; anything missing is listed rather than invented.
+      </p>
+
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => text.trim() && analyse(text)}
+        placeholder={"1 Sol Ring (LTC) 59\n4 Lightning Bolt\n10 Forest"}
+        rows={8}
+        style={{ ...inputS, fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, resize: "vertical" }}
+      />
+
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <button
+          onClick={() => analyse(text)}
+          disabled={!text.trim()}
+          style={{
+            background: text.trim() ? STOCK_BG : C.border,
+            color: text.trim() ? C.stockInk : C.parchmentDim,
+            border: "none",
+            borderRadius: 6,
+            padding: "9px 16px",
+            fontWeight: 700,
+            fontSize: 13,
+            cursor: text.trim() ? "pointer" : "default",
+            boxShadow: text.trim() ? STOCK_SHADOW : "none",
+          }}
+        >
+          Check list
+        </button>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            background: "transparent",
+            border: `1px solid ${C.border}`,
+            color: C.parchmentDim,
+            borderRadius: 6,
+            padding: "9px 14px",
+            fontSize: 12.5,
+            cursor: "pointer",
+          }}
+        >
+          Load a file
+          <input type="file" accept=".txt,.json,.dec,.dek,text/plain,application/json" onChange={handleFile} style={{ display: "none" }} />
+        </label>
+      </div>
+
+      {error && <div style={{ color: C.redBright, fontSize: 12.5, marginTop: 10 }}>{error}</div>}
+
+      {preview && (
+        <div style={{ marginTop: 16 }}>
+          <Field label="Deck name">
+            <input style={inputS} value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+
+          <div
+            className="mono"
+            style={{
+              fontSize: 11.5,
+              color: totalMatched === totalWanted ? C.greenBright : C.goldBright,
+              marginBottom: 10,
+            }}
+          >
+            {totalMatched} of {totalWanted} cards matched from your collection
+            {preview.commanderId ? " · commander found" : preview.parsed.commander ? " · commander missing" : ""}
+          </div>
+
+          {(preview.missing.length > 0 || preview.partial.length > 0) && (
+            <div
+              style={{
+                border: `1px solid rgba(222,115,134,0.35)`,
+                borderRadius: 8,
+                padding: "10px 12px",
+                marginBottom: 12,
+                maxHeight: 170,
+                overflowY: "auto",
+              }}
+            >
+              <div
+                className="mono"
+                style={{ fontSize: 9.5, letterSpacing: 1.2, textTransform: "uppercase", color: C.redBright, marginBottom: 6 }}
+              >
+                Not added — you don't own these (or they're in another deck)
+              </div>
+              {preview.missing.map((m, i) => (
+                <div key={`m${i}`} className="mono" style={{ fontSize: 11, color: C.parchmentDim, padding: "1px 0" }}>
+                  {m.qty}× {m.name}
+                  {m.isCommander ? " (commander)" : ""}
+                </div>
+              ))}
+              {preview.partial.map((p, i) => (
+                <div key={`p${i}`} className="mono" style={{ fontSize: 11, color: C.parchmentDim, padding: "1px 0" }}>
+                  {p.name} — only {p.have} of {p.qty} available
+                </div>
+              ))}
+            </div>
+          )}
+
+          {preview.parsed.sideboard?.length > 0 && (
+            <div className="mono" style={{ fontSize: 10.5, color: C.parchmentDim, marginBottom: 10 }}>
+              {preview.parsed.sideboard.length} sideboard line
+              {preview.parsed.sideboard.length === 1 ? "" : "s"} ignored — HoardKeeper decks don't
+              track sideboards.
+            </div>
+          )}
+
+          <button
+            onClick={() =>
+              onImport({
+                name: name.trim() || "Imported deck",
+                format:
+                  meta?.format ||
+                  (preview.commanderId || preview.parsed.commander ? "commander" : "standard"),
+                colors: meta?.colors || null,
+                commanderId: preview.commanderId,
+                entries: preview.entries,
+                basics: preview.basics,
+                tokenCounts: meta?.tokenCounts || {},
+                extraTokens: meta?.extraTokens || [],
+              })
+            }
+            disabled={preview.entries.length === 0 && !preview.commanderId}
+            style={{
+              width: "100%",
+              background: STOCK_BG,
+              color: C.stockInk,
+              border: "none",
+              borderRadius: 6,
+              padding: "12px",
+              fontWeight: 700,
+              fontSize: 14,
+              cursor: "pointer",
+              boxShadow: STOCK_SHADOW,
+            }}
+          >
+            Create deck with {totalMatched} card{totalMatched === 1 ? "" : "s"}
+          </button>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
+function TokensPanel({ tokens, tokenCards, qtyOf, onSetQty, onAdd, onRemove }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  async function searchTokens() {
+    if (!query.trim()) return;
+    setSearching(true);
+    try {
+      // Scryfall indexes tokens as cards; this restricts the search to them.
+      const r = await scryfallSearch(`${query.trim()} t:token`, "cards", 12);
+      setResults(r);
+    } catch (e) {
+      setResults([]);
+    }
+    setSearching(false);
+  }
+
+  const total = tokens.reduce((n, t) => n + qtyOf(t.id), 0);
+  const stepBtn = {
+    background: "none",
+    borderRadius: 4,
+    cursor: "pointer",
+    width: 24,
+    height: 22,
+    padding: 0,
+    fontSize: 13,
+    lineHeight: 1,
+  };
+
+  return (
+    <div style={{ marginTop: 26 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+        <span
+          className="mono"
+          style={{
+            fontSize: 9,
+            letterSpacing: 1.8,
+            textTransform: "uppercase",
+            background: STOCK_BG,
+            color: C.stockInk,
+            fontWeight: 600,
+            padding: "4px 9px",
+            borderRadius: 3,
+            boxShadow: STOCK_SHADOW,
+          }}
+        >
+          Tokens to bring
+        </span>
+        <span className="mono" style={{ fontSize: 10.5, color: C.parchmentDim }}>
+          {tokens.length} type{tokens.length === 1 ? "" : "s"} · {total} card
+          {total === 1 ? "" : "s"} to bring
+        </span>
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="mono"
+          style={{
+            background: open ? "rgba(232,236,241,0.1)" : "transparent",
+            border: `1px solid ${open ? C.goldBright : C.border}`,
+            color: open ? C.goldBright : C.parchmentDim,
+            borderRadius: 5,
+            padding: "5px 11px",
+            fontSize: 10,
+            letterSpacing: 0.8,
+            textTransform: "uppercase",
+            cursor: "pointer",
+          }}
+        >
+          + Add any token
+        </button>
+      </div>
+
+      {open && (
+        <div style={{ marginBottom: 14, maxWidth: 520 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && searchTokens()}
+              placeholder="Token name — treasure, zombie, clue…"
+              style={{
+                flex: 1,
+                background: C.bgPanel2,
+                border: `1px solid ${C.border}`,
+                borderRadius: 6,
+                padding: "9px 11px",
+                color: C.parchment,
+                fontSize: 13,
+              }}
+            />
+            <button
+              onClick={searchTokens}
+              style={{
+                background: STOCK_BG,
+                color: C.stockInk,
+                border: "none",
+                borderRadius: 6,
+                padding: "0 14px",
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: "pointer",
+                boxShadow: STOCK_SHADOW,
+              }}
+            >
+              {searching ? "…" : "Search"}
+            </button>
+          </div>
+          {results.length > 0 && (
+            <div
+              style={{
+                border: `1px solid ${C.border}`,
+                borderTop: "none",
+                borderRadius: "0 0 8px 8px",
+                maxHeight: 220,
+                overflowY: "auto",
+              }}
+            >
+              {results.map((r) => (
+                <div
+                  key={r.scryfallId}
+                  onClick={() => {
+                    onAdd({
+                      id: r.scryfallId,
+                      name: r.name,
+                      typeLine: r.typeLine,
+                      imageUrl: r.imageUrl,
+                      scryfallUri: r.scryfallUri,
+                    });
+                    setQuery("");
+                    setResults([]);
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 9,
+                    padding: "6px 11px",
+                    cursor: "pointer",
+                    borderBottom: `1px solid rgba(185,191,199,0.08)`,
+                  }}
+                >
+                  <div style={{ width: 24, aspectRatio: "5 / 7", borderRadius: 3, overflow: "hidden", flexShrink: 0 }}>
+                    <CardArt card={r} />
+                  </div>
+                  <span className="serif" style={{ fontSize: 12.5, color: C.parchment, flex: 1 }}>
+                    {r.name}
+                  </span>
+                  <span className="mono" style={{ fontSize: 9.5, color: C.parchmentDim }}>
+                    {(r.typeLine || "").replace(/^Token\s*/i, "")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tokens.length === 0 && (
+        <div className="mono" style={{ fontSize: 11, color: C.parchmentDim }}>
+          None of these cards make tokens — add any you want to bring anyway.
+        </div>
+      )}
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+          gap: 14,
+        }}
+      >
+        {tokens.map((t) => {
+          const art = tokenCards[t.id];
+          const qty = qtyOf(t.id);
+          return (
+            <div key={t.id} style={{ opacity: qty === 0 ? 0.4 : 1 }}>
+              <div
+                className="sleeve"
+                style={{
+                  position: "relative",
+                  aspectRatio: "5 / 7",
+                  borderRadius: 8,
+                  overflow: "hidden",
+                  background: "#0C0E10",
+                  boxShadow: "0 8px 16px -6px rgba(0,0,0,0.8), inset 0 0 0 1px rgba(232,236,241,0.12)",
+                }}
+              >
+                {art?.imageUrl ? (
+                  <img
+                    src={art.imageUrl}
+                    alt={t.name}
+                    loading="lazy"
+                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                  />
+                ) : (
+                  <div
+                    className="mono"
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 10,
+                      color: C.parchmentDim,
+                      textAlign: "center",
+                      padding: 10,
+                    }}
+                  >
+                    {t.name}
+                  </div>
+                )}
+                {qty > 1 && (
+                  <span
+                    className="mono"
+                    style={{
+                      position: "absolute",
+                      top: 6,
+                      right: 6,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      background: STOCK_BG,
+                      color: C.stockInk,
+                      borderRadius: 3,
+                      padding: "1px 7px",
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.5)",
+                    }}
+                  >
+                    ×{qty}
+                  </span>
+                )}
+                {art?.power && (
+                  <span
+                    className="mono"
+                    style={{
+                      position: "absolute",
+                      bottom: 6,
+                      right: 6,
+                      fontSize: 10,
+                      fontWeight: 600,
+                      background: STOCK_BG,
+                      color: C.stockInk,
+                      borderRadius: 3,
+                      padding: "1px 6px",
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.5)",
+                    }}
+                  >
+                    {art.power}/{art.toughness}
+                  </span>
+                )}
+              </div>
+
+              <div
+                style={{
+                  marginTop: 7,
+                  padding: "4px 8px",
+                  background: STOCK_BG,
+                  borderRadius: 3,
+                  color: C.stockInk,
+                  boxShadow: STOCK_SHADOW,
+                }}
+              >
+                <div
+                  className="serif"
+                  style={{
+                    fontWeight: 600,
+                    fontSize: 12,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                  title={t.name}
+                >
+                  {t.name}
+                </div>
+                <div className="mono" style={{ fontSize: 8.5, color: C.stockDim }}>
+                  {(t.ty || art?.typeLine || "").replace(/^Token\s*/i, "").toUpperCase()}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 7 }}>
+                <button
+                  onClick={() => onSetQty(t.id, qty - 1)}
+                  disabled={qty === 0}
+                  className="mono"
+                  style={{
+                    ...stepBtn,
+                    border: `1px solid ${C.border}`,
+                    color: qty === 0 ? C.border : C.parchmentDim,
+                    cursor: qty === 0 ? "default" : "pointer",
+                  }}
+                >
+                  −
+                </button>
+                <span className="mono" style={{ fontSize: 12.5, color: C.goldBright, minWidth: 26, textAlign: "center" }}>
+                  {qty}
+                </span>
+                <button
+                  onClick={() => onSetQty(t.id, qty + 1)}
+                  className="mono"
+                  style={{ ...stepBtn, border: `1px solid ${C.border}`, color: C.parchmentDim }}
+                >
+                  +
+                </button>
+              </div>
+
+              <div
+                className="mono"
+                style={{ fontSize: 9, color: C.parchmentDim, marginTop: 5, lineHeight: 1.45, textAlign: "center" }}
+                title={t.sources.join(", ")}
+              >
+                {t.sources.length > 0 ? (
+                  <>
+                    made by {t.sources.length} card{t.sources.length === 1 ? "" : "s"}
+                    <div style={{ opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {t.sources.slice(0, 2).join(", ")}
+                      {t.sources.length > 2 ? ` +${t.sources.length - 2}` : ""}
+                    </div>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => onRemove(t.id)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: C.parchmentDim,
+                      fontSize: 9,
+                      cursor: "pointer",
+                      textDecoration: "underline",
+                      padding: 0,
+                    }}
+                  >
+                    added by hand — remove
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function DeckGallery({ deck, commander, cardById, oracleMap, isStandard }) {
   const members = [];
   if (!isStandard && commander) members.push({ card: commander, qty: 1, isCommander: true });
@@ -3384,7 +4793,7 @@ function DeckGallery({ deck, commander, cardById, oracleMap, isStandard }) {
                   ×{qty}
                 </span>
               )}
-              {card.foil && (
+              {finishOf(card) !== "nonfoil" && (
                 <>
                   <div className="foil-sheen" />
                   <div className="foil-edge" />
@@ -3412,7 +4821,7 @@ function DeckGallery({ deck, commander, cardById, oracleMap, isStandard }) {
                 </span>
               )}
               <CardArt card={card} />
-              {card.foil && (
+              {finishOf(card) !== "nonfoil" && (
                 <>
                   <div className="foil-sheen" />
                   <div className="foil-edge" />
@@ -3452,7 +4861,8 @@ function DeckGallery({ deck, commander, cardById, oracleMap, isStandard }) {
                 className="mono"
                 style={{ fontSize: 9.5, color: C.stockDim, whiteSpace: "nowrap", flexShrink: 0 }}
               >
-                {(card.typeLine || "").split("—")[0].trim().toUpperCase()}
+                {(card.set || "").toUpperCase()}
+                {card.collectorNumber ? ` #${card.collectorNumber}` : ""}
               </span>
             </div>
 
@@ -3501,13 +4911,20 @@ function DeckGallery({ deck, commander, cardById, oracleMap, isStandard }) {
   );
 }
 
-function DecksView({ cards, decks, setDecks, valueOf }) {
+function DecksView({ cards, decks, setDecks, valueOf, collections }) {
+  const collectionLabel = (id) => {
+    if (!id || id === UNCATEGORIZED) return "Uncategorized";
+    return collections?.find((c) => c.id === id)?.name || "Uncategorized";
+  };
   const [openDeck, setOpenDeck] = useState(null);
   const [drafting, setDrafting] = useState(false);
   const [draftNote, setDraftNote] = useState("");
   const [addSearch, setAddSearch] = useState("");
+  const [justAdded, setJustAdded] = useState("");
+  const addInputRef = useRef(null);
   const [deckView, setDeckView] = useState("cards"); // cards | roles
   const [oracleMap, setOracleMap] = useState({});
+  const [tokenCards, setTokenCards] = useState({});
 
   const commanders = useMemo(
     () =>
@@ -3521,6 +4938,22 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
   );
 
   const deck = decks.find((d) => d.id === openDeck) || null;
+
+  // A physical card can only sit in one deck at a time. Work out how many
+  // copies of each card the *other* decks have already claimed.
+  // NOTE: must stay above the early return below — hooks can't be conditional.
+  const committedElsewhere = useMemo(() => {
+    const m = {};
+    decks.forEach((d) => {
+      if (d.id === openDeck) return;
+      d.entries.forEach((e) => {
+        m[e.cardId] = (m[e.cardId] || 0) + (e.qty || 1);
+      });
+      // another deck's commander is a physical card too
+      if (d.commanderId) m[d.commanderId] = (m[d.commanderId] || 0) + 1;
+    });
+    return m;
+  }, [decks, openDeck]);
   const commander = deck ? cards.find((c) => c.id === deck.commanderId) : null;
   const cardById = useMemo(() => {
     const m = {};
@@ -3529,6 +4962,46 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
   }, [cards]);
 
   const [newColors, setNewColors] = useState([]);
+  const [importing, setImporting] = useState(false);
+
+  // Which tokens this deck can make, and which cards make them. Derived from
+  // Scryfall's related-card data rather than guessed from rules text.
+  const tokensNeeded = useMemo(() => {
+    if (!deck) return [];
+    const members = [
+      ...(commander ? [commander] : []),
+      ...deck.entries.map((e) => cardById[e.cardId]).filter(Boolean),
+    ];
+    const byId = {};
+    members.forEach((c) => {
+      (oracleMap[c.scryfallId]?.parts || []).forEach((p) => {
+        if (!byId[p.id]) byId[p.id] = { ...p, sources: [] };
+        if (!byId[p.id].sources.includes(c.name)) byId[p.id].sources.push(c.name);
+      });
+    });
+    // tokens added by hand sit alongside the detected ones
+    (deck.extraTokens || []).forEach((t) => {
+      if (!byId[t.id]) byId[t.id] = { ...t, sources: [], manual: true };
+      else byId[t.id].manual = true;
+    });
+    return Object.values(byId).sort(
+      (a, b) => b.sources.length - a.sources.length || a.name.localeCompare(b.name)
+    );
+  }, [deck, commander, cardById, oracleMap]);
+
+  // artwork for those tokens
+  useEffect(() => {
+    const ids = tokensNeeded.map((t) => t.id).filter((id) => id && !tokenCards[id]);
+    if (ids.length === 0) return;
+    let live = true;
+    (async () => {
+      const map = await fetchTokenCards(ids);
+      if (live) setTokenCards(map);
+    })();
+    return () => {
+      live = false;
+    };
+  }, [tokensNeeded]);
 
   // rules text for the browse view, cached in the same store the drafter uses
   useEffect(() => {
@@ -3568,6 +5041,26 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
     setOpenDeck(id);
   }
 
+  // Cards committed to every deck, so an import can't claim a copy that's
+  // already sleeved somewhere else.
+  const committedAll = useMemo(() => {
+    const m = {};
+    decks.forEach((d) => {
+      d.entries.forEach((e) => {
+        m[e.cardId] = (m[e.cardId] || 0) + (e.qty || 1);
+      });
+      if (d.commanderId) m[d.commanderId] = (m[d.commanderId] || 0) + 1;
+    });
+    return m;
+  }, [decks]);
+
+  function importDeck(built) {
+    const id = uid();
+    setDecks((prev) => [...prev, { id, ...built }]);
+    setImporting(false);
+    setOpenDeck(id);
+  }
+
   function patchDeck(id, patch) {
     setDecks((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
   }
@@ -3586,8 +5079,19 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
       const ids = cards.filter((c) => c.scryfallId).map((c) => c.scryfallId);
       const oracle = await fetchOracleTexts(ids);
       setDraftNote("Drafting…");
+      // Cards sleeved in other decks are off the table, so a draft never
+      // silently claims a copy that's physically somewhere else.
+      // computed here rather than read from the outer scope, so this doesn't
+      // depend on which branch of the component rendered
+      const ident = deck.format === "standard" ? deck.colors || [] : commander?.colors || [];
+      const locked = cards.filter(
+        (c) => !c.sold && !isBasicLand(c) && identityFits(c, ident) && freeCopies(c) <= 0
+      ).length;
+      const lockedNote = locked
+        ? ` ${locked} card${locked === 1 ? " is" : "s are"} in your other decks and were skipped.`
+        : "";
       if (deck.format === "standard") {
-        const result = draftDeck60(deck.colors || [], cards, oracle);
+        const result = draftDeck60(deck.colors || [], cards, oracle, freeCopies);
         patchDeck(deck.id, { entries: result.entries, basics: result.basics });
         setDraftNote(
           [
@@ -3595,17 +5099,18 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
             result.shortfall > 0
               ? `Pool ran ${result.shortfall} cards short — more ${(deck.colors || []).join("/")} cards would fill it.`
               : "",
+            lockedNote.trim(),
           ]
             .filter(Boolean)
             .join(" ")
         );
       } else {
-        const result = draftDeck(commander, cards, oracle);
+        const result = draftDeck(commander, cards, oracle, freeCopies);
         patchDeck(deck.id, { entries: result.entries, basics: result.basics });
         setDraftNote(
-          result.shortfall > 0
+          (result.shortfall > 0
             ? `Drafted, but the pool ran short by ${result.shortfall} spells — add more ${(commander.colors || []).join("/")} cards to your collection to fill it.`
-            : ""
+            : "") + lockedNote
         );
       }
     } catch (e) {
@@ -3614,17 +5119,90 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
     setDrafting(false);
   }
 
+  // Basics live outside the entry list because they aren't tied to a specific
+  // copy you own — you can always field more.
+  // How many of each token you want to bring. Detected tokens start at one;
+  // anything can be raised as high as you like or dropped to none.
+  function tokenQty(id) {
+    const v = deck.tokenCounts?.[id];
+    return v === undefined ? 1 : v;
+  }
+
+  function setTokenQty(id, n) {
+    const next = { ...(deck.tokenCounts || {}) };
+    next[id] = Math.max(0, Math.min(99, n));
+    patchDeck(deck.id, { tokenCounts: next });
+  }
+
+  function addExtraToken(tok) {
+    const extras = deck.extraTokens || [];
+    if (extras.some((t) => t.id === tok.id)) {
+      setTokenQty(tok.id, tokenQty(tok.id) + 1);
+      return;
+    }
+    patchDeck(deck.id, {
+      extraTokens: [...extras, { id: tok.id, name: tok.name, ty: tok.typeLine || "" }],
+      tokenCounts: { ...(deck.tokenCounts || {}), [tok.id]: 1 },
+    });
+    setTokenCards((prev) => ({
+      ...prev,
+      [tok.id]: {
+        name: tok.name,
+        typeLine: tok.typeLine,
+        imageUrl: tok.imageUrl,
+        scryfallUri: tok.scryfallUri,
+        power: tok.power ?? null,
+        toughness: tok.toughness ?? null,
+      },
+    }));
+  }
+
+  function removeExtraToken(id) {
+    patchDeck(deck.id, {
+      extraTokens: (deck.extraTokens || []).filter((t) => t.id !== id),
+      tokenCounts: (() => {
+        const n = { ...(deck.tokenCounts || {}) };
+        delete n[id];
+        return n;
+      })(),
+    });
+  }
+
+  function setBasicQty(name, n) {
+    const next = { ...(deck.basics || {}) };
+    if (n <= 0) delete next[name];
+    else next[name] = Math.min(99, n);
+    patchDeck(deck.id, { basics: next });
+  }
+
   function removeEntry(cardId) {
     patchDeck(deck.id, { entries: deck.entries.filter((e) => e.cardId !== cardId) });
   }
 
   function addEntry(card) {
-    if (deck.entries.some((e) => e.cardId === card.id)) return;
-    if (deck.format !== "standard" && deck.entries.some((e) => cardById[e.cardId]?.name === card.name))
+    if (unavailableReason(card)) return;
+    const free = allowsAnyNumber(card, oracleMap[card.scryfallId]?.t);
+    // Already in the deck: bump the count instead of refusing, when allowed.
+    const existing = deck.entries.find((e) => e.cardId === card.id);
+    if (existing) {
+      if (deck.format === "standard" || free) setQty(card.id, (existing.qty || 1) + 1);
+      else return;
+      setAddSearch("");
+      setJustAdded(card.name);
+      setTimeout(() => addInputRef.current?.focus(), 0);
+      return;
+    }
+    if (deck.format !== "standard" && !free &&
+        deck.entries.some((e) => cardById[e.cardId]?.name === card.name))
       return; // commander singleton
     patchDeck(deck.id, {
       entries: [...deck.entries, { cardId: card.id, role: classifyRole(card, ""), qty: 1 }],
     });
+    // Clear the box and keep the cursor there so a run of cards can be typed
+    // one after another without reaching for the mouse.
+    setAddSearch("");
+    setJustAdded(card.name);
+    setTimeout(() => addInputRef.current?.focus(), 0);
   }
 
   function exportList() {
@@ -3636,6 +5214,16 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
       if (c) lines.push(`${e.qty || 1} ${c.name}`);
     });
     Object.entries(deck.basics || {}).forEach(([name, n]) => lines.push(`${n} ${name}`));
+    // Tokens go in a commented block: deckbuilders ignore the lines, but the
+    // list is there when you're standing at the shop counter.
+    if (tokensNeeded.length) {
+      lines.push("");
+      lines.push("// Tokens needed:");
+      tokensNeeded.forEach((t) => {
+        const n = tokenQty(t.id);
+        if (n > 0) lines.push(`// ${n} ${t.name}${t.ty ? ` (${t.ty})` : ""}`);
+      });
+    }
     navigator.clipboard?.writeText(lines.join("\n"));
     setDraftNote("Decklist copied to clipboard.");
   }
@@ -3722,6 +5310,23 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
             );
           })}
         </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <IconButton
+            onClick={() => setImporting(true)}
+            label="Import a deck"
+            icon={<Upload size={14} />}
+          />
+        </div>
+
+        {importing && (
+          <ImportDeckModal
+            cards={cards}
+            committed={committedAll}
+            onClose={() => setImporting(false)}
+            onImport={importDeck}
+          />
+        )}
 
         <div
           style={{
@@ -3846,20 +5451,84 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
   });
 
   const identity = isStandard ? deck.colors || [] : commander?.colors || [];
+  // Which decks are holding a given card, for explaining why it's unavailable.
+  function heldBy(cardId) {
+    return decks
+      .filter(
+        (d) =>
+          d.id !== deck?.id &&
+          (d.commanderId === cardId || d.entries.some((e) => e.cardId === cardId))
+      )
+      .map((d) => d.name);
+  }
+
+  // Copies still free to assign to this deck. Basic lands are exempt: they're
+  // trivially replaceable, and the quick-add buttons already ignore ownership.
+  function freeCopies(c) {
+    if (isBasicLand(c)) return 99;
+    return (c.quantity || 1) - (committedElsewhere[c.id] || 0);
+  }
+
+  // How many copies of this card the deck may hold in total.
+  function copyLimit(c) {
+    if (isBasicLand(c)) return 99;
+    const free = freeCopies(c);
+    if (allowsAnyNumber(c, oracleMap[c?.scryfallId]?.t)) return Math.max(0, free);
+    return isStandard ? Math.min(4, Math.max(0, free)) : Math.min(1, Math.max(0, free));
+  }
+
+  // Shown but not addable: every copy you own is committed to another deck.
+  function conflicted(c) {
+    if (isBasicLand(c)) return false;
+    if (deck.entries.some((e) => e.cardId === c.id)) return false;
+    return freeCopies(c) <= 0;
+  }
+
+  // A card belongs in the picker if the deck can still take another copy of it —
+  // so basics keep showing up until you've added as many as you want.
+  function canAddMore(c) {
+    const inDeck = deck.entries.find((e) => e.cardId === c.id);
+    if (inDeck) return (inDeck.qty || 1) < copyLimit(c);
+    const free = isBasicLand(c) || allowsAnyNumber(c, oracleMap[c?.scryfallId]?.t);
+    if (!isStandard && !free && deck.entries.some((e) => cardById[e.cardId]?.name === c.name))
+      return false; // commander singleton, by name
+    return true;
+  }
+
+  // Why a listed card can't be taken right now — null means it's available.
+  function unavailableReason(c) {
+    if (isBasicLand(c)) return null;
+    const here = deck.entries.find((e) => e.cardId === c.id)?.qty || 0;
+    const free = freeCopies(c) - here;
+    if (free > 0) return null;
+    const where = [...new Set(heldBy(c.id))];
+    const owned = c.quantity || 1;
+    if (where.length)
+      return `${owned === 1 ? "your copy is" : `all ${owned} copies are`} in ${where
+        .slice(0, 2)
+        .join(", ")}${where.length > 2 ? ` +${where.length - 2}` : ""}`;
+    return `you own ${owned}, all assigned`;
+  }
+
   const addable = cards.filter(
     (c) =>
       !c.sold &&
       c.id !== commander?.id &&
       identityFits(c, identity) &&
-      !deck.entries.some((e) => e.cardId === c.id) &&
-      (isStandard || !deck.entries.some((e) => cardById[e.cardId]?.name === c.name)) &&
-      (!addSearch || c.name.toLowerCase().includes(addSearch.toLowerCase()))
+      (canAddMore(c) || conflicted(c)) &&
+      (!addSearch ||
+        c.name.toLowerCase().includes(addSearch.toLowerCase()) ||
+        // so "hob 312" or "hob" narrows to a printing
+        `${c.set || ""} ${c.collectorNumber || ""}`.toLowerCase().includes(addSearch.toLowerCase()) ||
+        `${c.set || ""}${c.collectorNumber || ""}`.toLowerCase().includes(addSearch.toLowerCase().replace(/\s+/g, "")))
   );
+
+  // The row Enter will take, and the one that gets the highlight.
+  const firstFreeIndex = addable.findIndex((c) => !unavailableReason(c));
 
   function setQty(cardId, qty) {
     const c = cardById[cardId];
-    const cap = Math.min(4, c?.quantity || 1);
-    const n = Math.max(1, Math.min(cap, qty));
+    const n = Math.max(1, Math.min(copyLimit(c), qty));
     patchDeck(deck.id, {
       entries: deck.entries.map((e) => (e.cardId === cardId ? { ...e, qty: n } : e)),
     });
@@ -3952,6 +5621,27 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
               {deck.entries.length ? "Re-draft from collection" : "Auto-build from collection"}
             </button>
             <IconButton onClick={exportList} label="Copy decklist" icon={<Download size={14} />} />
+            <IconButton
+              onClick={() =>
+                downloadFile(
+                  `${(deck.name || "deck").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.txt`,
+                  deckToText(deck, cardById, commander, tokensNeeded, tokenQty)
+                )
+              }
+              label="Export .txt"
+              icon={<Download size={14} />}
+            />
+            <IconButton
+              onClick={() =>
+                downloadFile(
+                  `${(deck.name || "deck").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.json`,
+                  deckToJson(deck, cardById, commander),
+                  "application/json"
+                )
+              }
+              label="Export .json"
+              icon={<Download size={14} />}
+            />
             <IconButton onClick={() => deleteDeck(deck.id)} label="Delete deck" icon={<Trash2 size={14} />} />
             <div style={{ width: 8 }} />
             <IconButton onClick={() => setDeckView("cards")} label="Cards" icon={<LibraryBig size={14} />} active={deckView === "cards"} />
@@ -3976,6 +5666,15 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
       )}
 
       {deckView === "roles" && (
+      <>
+      <div
+        className="mono"
+        style={{ fontSize: 9.5, color: C.parchmentDim, marginBottom: 9, letterSpacing: 0.6 }}
+      >
+        Each row: card name · set and collector number · <span style={{
+          background: "rgba(255,255,255,0.06)", border: `1px solid ${C.border}`,
+          borderRadius: 9, padding: "1px 6px" }}>mana value</span>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 16 }}>
         {ROLE_ORDER.filter((r) => grouped[r]?.length || (r === "land" && basicsN > 0)).map((role) => (
           <div
@@ -4031,12 +5730,16 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
               >
                 <span
                   className="serif"
-                  style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: C.parchment }}
+                  style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: C.parchment }}
                 >
                   {c.name}
+                  <span className="mono" style={{ fontSize: 9, color: C.parchmentDim, marginLeft: 6 }}>
+                    {(c.set || "").toUpperCase()}
+                    {c.collectorNumber ? ` ${c.collectorNumber}` : ""}
+                  </span>
                 </span>
                 <span style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
-                  {isStandard && (
+                  {(isStandard || allowsAnyNumber(c, oracleMap[c.scryfallId]?.t)) && (
                     <span className="mono" style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11 }}>
                       <button
                         onClick={() => setQty(c.id, (deck.entries.find((e) => e.cardId === c.id)?.qty || 1) - 1)}
@@ -4055,8 +5758,21 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
                       </button>
                     </span>
                   )}
-                  <span className="mono" style={{ fontSize: 10, color: C.parchmentDim }}>
-                    {c.cmc ?? ""}
+                  <span
+                    className="mono"
+                    title={`Mana value ${c.cmc ?? 0}`}
+                    style={{
+                      fontSize: 9.5,
+                      color: C.parchmentDim,
+                      background: "rgba(255,255,255,0.06)",
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 9,
+                      padding: "1px 6px",
+                      minWidth: 26,
+                      textAlign: "center",
+                    }}
+                  >
+                    {c.cmc ?? 0}
                   </span>
                   <button
                     onClick={() => removeEntry(c.id)}
@@ -4072,17 +5788,72 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
                 <div
                   key={name}
                   className="mono"
-                  style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 11.5, color: C.parchmentDim }}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "4px 0",
+                    fontSize: 11.5,
+                    color: C.parchmentDim,
+                  }}
                 >
-                  <span>{n}× {name}</span>
-                  <span style={{ fontSize: 9.5 }}>basic</span>
+                  <span style={{ flex: 1 }}>{name}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                    <button
+                      onClick={() => setBasicQty(name, n - 1)}
+                      style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 3, color: C.parchmentDim, cursor: "pointer", width: 17, height: 17, lineHeight: 1, padding: 0, fontSize: 11 }}
+                    >
+                      −
+                    </button>
+                    <span style={{ color: C.goldBright, minWidth: 18, textAlign: "center" }}>{n}×</span>
+                    <button
+                      onClick={() => setBasicQty(name, n + 1)}
+                      style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 3, color: C.parchmentDim, cursor: "pointer", width: 17, height: 17, lineHeight: 1, padding: 0, fontSize: 11 }}
+                    >
+                      +
+                    </button>
+                  </span>
+                  <span style={{ fontSize: 9.5, minWidth: 30, textAlign: "right" }}>basic</span>
                 </div>
               ))}
+            {role === "land" && (
+              <div style={{ display: "flex", gap: 5, marginTop: 8, flexWrap: "wrap" }}>
+                {["Plains", "Island", "Swamp", "Mountain", "Forest"].map((b) => (
+                  <button
+                    key={b}
+                    onClick={() => setBasicQty(b, (deck.basics?.[b] || 0) + 1)}
+                    title={`Add a ${b}`}
+                    className="mono"
+                    style={{
+                      background: "transparent",
+                      border: `1px solid ${C.border}`,
+                      color: C.parchmentDim,
+                      borderRadius: 3,
+                      padding: "3px 7px",
+                      fontSize: 9.5,
+                      cursor: "pointer",
+                    }}
+                  >
+                    +{b.slice(0, 2)}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </div>
-
+      </>
       )}
+
+      <TokensPanel
+        tokens={tokensNeeded}
+        tokenCards={tokenCards}
+        qtyOf={tokenQty}
+        onSetQty={setTokenQty}
+        onAdd={addExtraToken}
+        onRemove={removeExtraToken}
+      />
 
       {/* add cards */}
       <div style={{ marginTop: 24, maxWidth: 560 }}>
@@ -4093,8 +5864,22 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
           Add from collection ({identity.join("") || "colorless"} identity)
         </div>
         <input
+          ref={addInputRef}
           value={addSearch}
-          onChange={(e) => setAddSearch(e.target.value)}
+          onChange={(e) => {
+            setAddSearch(e.target.value);
+            if (justAdded) setJustAdded("");
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              const target = addable.find((c) => !unavailableReason(c));
+              if (target) addEntry(target);
+            }
+            if (e.key === "Escape") {
+              setAddSearch("");
+              setJustAdded("");
+            }
+          }}
           placeholder="Search your cards…"
           style={{
             width: "100%",
@@ -4106,6 +5891,11 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
             fontSize: 13,
           }}
         />
+        {justAdded && !addSearch && (
+          <div className="mono" style={{ fontSize: 11, color: C.greenBright, marginTop: 7 }}>
+            ✓ {justAdded} added — keep typing for the next one
+          </div>
+        )}
         {addSearch && (
           <div
             style={{
@@ -4116,25 +5906,98 @@ function DecksView({ cards, decks, setDecks, valueOf }) {
               overflowY: "auto",
             }}
           >
-            {addable.slice(0, 30).map((c) => (
+            {addable.slice(0, 30).map((c, i) => {
+              const blocked = unavailableReason(c);
+              const isFirstFree = i === firstFreeIndex;
+              return (
               <div
                 key={c.id}
-                onClick={() => addEntry(c)}
+                onClick={() => !blocked && addEntry(c)}
+                title={blocked ? `Unavailable — ${blocked}` : undefined}
                 style={{
                   display: "flex",
-                  justifyContent: "space-between",
-                  padding: "7px 12px",
-                  cursor: "pointer",
+                  alignItems: "center",
+                  gap: 9,
+                  padding: "6px 12px",
+                  cursor: blocked ? "not-allowed" : "pointer",
                   fontSize: 12.5,
                   borderBottom: `1px solid rgba(185,191,199,0.08)`,
+                  background: isFirstFree ? "rgba(232,236,241,0.06)" : "transparent",
+                  borderLeft: isFirstFree ? `3px solid ${C.goldBright}` : "3px solid transparent",
+                  opacity: blocked ? 0.42 : 1,
                 }}
               >
-                <span className="serif" style={{ color: C.parchment }}>{c.name}</span>
-                <span className="mono" style={{ fontSize: 10.5, color: C.parchmentDim }}>
-                  {(c.typeLine || "").split("—")[0].trim()} · {c.cmc ?? ""}
-                </span>
+                {/* the art is what actually distinguishes one basic from another */}
+                <div
+                  style={{
+                    width: 26,
+                    aspectRatio: "5 / 7",
+                    borderRadius: 3,
+                    overflow: "hidden",
+                    flexShrink: 0,
+                    border: `1px solid ${C.border}`,
+                  }}
+                >
+                  <CardArt card={c} />
+                </div>
+
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    className="serif"
+                    style={{
+                      color: C.parchment,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {c.name}
+                    {finishOf(c) !== "nonfoil" && (
+                      <span className="mono" style={{ fontSize: 8.5, color: C.gold, marginLeft: 6 }}>
+                        FOIL
+                      </span>
+                    )}
+                    {isFirstFree && (
+                      <span className="mono" style={{ fontSize: 9, color: C.parchmentDim, marginLeft: 8 }}>
+                        ↵
+                      </span>
+                    )}
+                  </div>
+                  <div
+                    className="mono"
+                    style={{ fontSize: 9.5, color: C.parchmentDim, textTransform: "uppercase" }}
+                  >
+                    {(c.typeLine || "").split("—")[0].trim()}
+                    {c.cmc !== undefined && c.cmc !== null ? ` · ${c.cmc} CMC` : ""}
+                  </div>
+                </div>
+
+                {/* the collector line: which exact printing this is */}
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div className="mono" style={{ fontSize: 10.5, color: C.goldBright }}>
+                    {(c.set || "").toUpperCase()}
+                    {c.collectorNumber ? ` #${c.collectorNumber}` : ""}
+                  </div>
+                  <div className="mono" style={{ fontSize: 9, color: C.parchmentDim }}>
+                    {(() => {
+                      if (blocked)
+                        return <span style={{ color: C.redBright }}>in use — {blocked}</span>;
+                      const inDeck = deck.entries.find((e) => e.cardId === c.id);
+                      if (inDeck)
+                        return (
+                          <span style={{ color: C.greenBright }}>
+                            {inDeck.qty || 1} in deck · +1 more
+                          </span>
+                        );
+                      return `${collectionLabel(c.collectionId)}${
+                        (c.quantity || 1) > 1 ? ` · ×${c.quantity}` : ""
+                      }`;
+                    })()}
+                  </div>
+                </div>
               </div>
-            ))}
+              );
+            })}
             {addable.length === 0 && (
               <div style={{ padding: "10px 12px", fontSize: 12, color: C.parchmentDim }}>
                 Nothing in identity matches.
@@ -4879,7 +6742,10 @@ function BulkEditModal({ count, decks, overrideCount, collections, onClose, onAp
     if (collectionId) patch.collectionId = collectionId;
     if (location) patch.location = location;
     if (condition) patch.condition = condition;
-    if (foil) patch.foil = foil === "yes";
+    if (foil) {
+      patch.finish = foil;
+      patch.foil = foil === "foil";
+    }
     // Clearing the override puts the card back on the collection's even split —
     // the right state for anything that came out of a booster.
     if (costMode === "clear") patch.costOverride = null;
@@ -4951,11 +6817,12 @@ function BulkEditModal({ count, decks, overrideCount, collections, onClose, onAp
             ))}
           </select>
         </Field>
-        <Field label="Foil">
+        <Field label="Finish">
           <select style={inputStyle} value={foil} onChange={(e) => setFoil(e.target.value)}>
             <option value="">Keep as is</option>
-            <option value="yes">Mark as foil</option>
-            <option value="no">Mark as nonfoil</option>
+            <option value="nonfoil">Normal</option>
+            <option value="foil">Foil</option>
+            <option value="etched">Etched</option>
           </select>
         </Field>
       </div>
@@ -4981,8 +6848,193 @@ function BulkEditModal({ count, decks, overrideCount, collections, onClose, onAp
   );
 }
 
+function AccountPanel({ account }) {
+  const [mode, setMode] = useState(null); // null | password | delete
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [pw, setPw] = useState("");
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  const input = {
+    width: "100%",
+    background: C.bgPanel2,
+    border: `1px solid ${C.border}`,
+    borderRadius: 6,
+    padding: "9px 11px",
+    color: C.parchment,
+    fontSize: 13,
+    marginBottom: 8,
+  };
+  const small = {
+    background: "none",
+    border: `1px solid ${C.border}`,
+    color: C.parchmentDim,
+    borderRadius: 6,
+    padding: "8px 13px",
+    fontSize: 12.5,
+    cursor: "pointer",
+  };
+
+  async function signOut() {
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      headers: { "x-hk-app": "1" },
+      credentials: "same-origin",
+    });
+    window.location.reload();
+  }
+
+  async function changePassword() {
+    setErr("");
+    setMsg("");
+    const res = await fetch("/api/auth/password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-hk-app": "1" },
+      credentials: "same-origin",
+      body: JSON.stringify({ current, next }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) return setErr(d.error || "Couldn't change the password.");
+    setMsg("Password changed. Other devices have been signed out.");
+    setCurrent("");
+    setNext("");
+    setMode(null);
+  }
+
+  async function deleteAccount() {
+    setErr("");
+    const res = await fetch("/api/auth/account", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", "x-hk-app": "1" },
+      credentials: "same-origin",
+      body: JSON.stringify({ password: pw }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) return setErr(d.error || "Couldn't delete the account.");
+    window.location.reload();
+  }
+
+  return (
+    <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 22, paddingTop: 16 }}>
+      <div
+        style={{
+          fontSize: 12,
+          color: C.parchmentDim,
+          letterSpacing: 1,
+          textTransform: "uppercase",
+          marginBottom: 6,
+        }}
+      >
+        Account
+      </div>
+      <p style={{ fontSize: 12.5, color: C.parchmentDim, marginTop: 0 }}>
+        Signed in as <b style={{ color: C.parchment }}>{account?.email}</b>.
+      </p>
+
+      {msg && <div style={{ fontSize: 12, color: C.greenBright, marginBottom: 8 }}>{msg}</div>}
+      {err && <div style={{ fontSize: 12, color: C.redBright, marginBottom: 8 }}>{err}</div>}
+
+      {mode === "password" && (
+        <div style={{ marginBottom: 10 }}>
+          <input
+            style={input}
+            type="password"
+            placeholder="Current password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+          />
+          <input
+            style={input}
+            type="password"
+            placeholder="New password (10+ characters)"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={changePassword}
+              style={{
+                background: STOCK_BG,
+                color: C.stockInk,
+                border: "none",
+                borderRadius: 6,
+                padding: "8px 14px",
+                fontWeight: 700,
+                fontSize: 12.5,
+                cursor: "pointer",
+                boxShadow: STOCK_SHADOW,
+              }}
+            >
+              Save
+            </button>
+            <button style={small} onClick={() => setMode(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mode === "delete" && (
+        <div style={{ marginBottom: 10 }}>
+          <p style={{ fontSize: 12.5, color: C.redBright, lineHeight: 1.55, marginTop: 0 }}>
+            This permanently erases your account and everything in your vault. Export a CSV first if
+            you want a copy — this cannot be undone.
+          </p>
+          <input
+            style={input}
+            type="password"
+            placeholder="Confirm with your password"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={deleteAccount}
+              style={{
+                background: "transparent",
+                border: `1px solid ${C.redBright}`,
+                color: C.redBright,
+                borderRadius: 6,
+                padding: "8px 14px",
+                fontWeight: 700,
+                fontSize: 12.5,
+                cursor: "pointer",
+              }}
+            >
+              Delete everything
+            </button>
+            <button style={small} onClick={() => setMode(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mode === null && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button style={small} onClick={signOut}>
+            Sign out
+          </button>
+          <button style={small} onClick={() => { setMode("password"); setErr(""); setMsg(""); }}>
+            Change password
+          </button>
+          <button
+            style={{ ...small, borderColor: "rgba(222,115,134,0.4)", color: C.redBright }}
+            onClick={() => { setMode("delete"); setErr(""); setMsg(""); }}
+          >
+            Delete account
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsModal({
   serverMode,
+  authMode,
+  account,
   currency,
   setCurrency,
   czkRate,
@@ -5049,7 +7101,9 @@ function SettingsModal({
         Done
       </button>
 
-      {serverMode && (
+      {serverMode && authMode === "accounts" && <AccountPanel account={account} />}
+
+      {serverMode && authMode !== "accounts" && (
         <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 22, paddingTop: 16 }}>
           <div style={{ fontSize: 12, color: C.parchmentDim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>
             Profile
@@ -5307,7 +7361,7 @@ function MoneyInput({ valueUsd, onChange, placeholder, autoFocus, step = "0.01" 
   );
 }
 
-function AddCardModal({ collections, cards, allocationPreview, onClose, onAdd, onCreateCollection }) {
+function AddCardModal({ defaultCollectionId, collections, cards, allocationPreview, onClose, onAdd, onCreateCollection }) {
   const [mode, setMode] = useState("search");
   const [query, setQuery] = useState("");
   const [setCode, setSetCode] = useState("");
@@ -5326,12 +7380,15 @@ function AddCardModal({ collections, cards, allocationPreview, onClose, onAdd, o
   const [codeSet, setCodeSet] = useState("");
   const [codeNum, setCodeNum] = useState("");
   const [lastAdded, setLastAdded] = useState("");
+  const [session, setSession] = useState([]); // everything added without closing
   const codeNumRef = useRef(null);
+  const searchInputRef = useRef(null);
 
   const [quantity, setQuantity] = useState(1);
-  const [foil, setFoil] = useState(false);
+  const [finish, setFinish] = useState("nonfoil");
   const [condition, setCondition] = useState("NM");
-  const [collectionId, setCollectionId] = useState(UNCATEGORIZED);
+  // Adding while a collection is filtered? Default to that collection.
+  const [collectionId, setCollectionId] = useState(defaultCollectionId || UNCATEGORIZED);
   const [costOverride, setCostOverride] = useState(null);
   const [location, setLocation] = useState("");
   const [newCollectionName, setNewCollectionName] = useState("");
@@ -5429,7 +7486,8 @@ function AddCardModal({ collections, cards, allocationPreview, onClose, onAdd, o
       {
         ...base,
         quantity: Number(quantity) || 1,
-        foil,
+        finish,
+        foil: finish === "foil",
         condition,
         collectionId: finalCollectionId,
         location: location.trim(),
@@ -5437,13 +7495,29 @@ function AddCardModal({ collections, cards, allocationPreview, onClose, onAdd, o
       },
       keepOpen
     );
+    setSession((prev) => [
+      { name: base.name, set: base.set, num: base.collectorNumber, qty: Number(quantity) || 1, finish },
+      ...prev,
+    ]);
+
     if (keepOpen) {
-      // rapid entry: keep the set, clear the number, back to the input
-      setLastAdded(`${base.name} added`);
+      // Rapid entry. Collection, finish, condition and location all stay put —
+      // they're usually the same across a batch — and only the card is cleared.
+      setLastAdded(base.name);
       setResult(null);
-      setCodeNum("");
       setQuantity(1);
-      setTimeout(() => codeNumRef.current?.focus(), 0);
+      setCostOverride(null);
+      if (mode === "code") {
+        setCodeNum("");
+        setTimeout(() => codeNumRef.current?.focus(), 0);
+      } else {
+        setQuery("");
+        setCandidates([]);
+        setChosenName("");
+        setPrintings([]);
+        setError("");
+        setTimeout(() => searchInputRef.current?.focus(), 0);
+      }
     }
   }
 
@@ -5462,6 +7536,7 @@ function AddCardModal({ collections, cards, allocationPreview, onClose, onAdd, o
         <>
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
             <input
+              ref={searchInputRef}
               style={inputStyle}
               placeholder="Card name (e.g. Sol Ring)"
               value={query}
@@ -5696,7 +7771,7 @@ function AddCardModal({ collections, cards, allocationPreview, onClose, onAdd, o
                 }}
               >
                 <CardArt card={result} />
-                {foil && (
+                {finish !== "nonfoil" && (
                   <>
                     <div className="foil-sheen" />
                     <div className="foil-edge" />
@@ -5758,7 +7833,7 @@ function AddCardModal({ collections, cards, allocationPreview, onClose, onAdd, o
           </div>
           {lastAdded && !result && !error && (
             <div className="mono" style={{ fontSize: 11.5, color: C.greenBright, marginBottom: 12 }}>
-              ✓ {lastAdded}
+              ✓ {lastAdded} added — next number
             </div>
           )}
           {error && (
@@ -5790,7 +7865,7 @@ function AddCardModal({ collections, cards, allocationPreview, onClose, onAdd, o
                 }}
               >
                 <CardArt card={result} />
-                {foil && (
+                {finish !== "nonfoil" && (
                   <>
                     <div className="foil-sheen" />
                     <div className="foil-edge" />
@@ -5830,13 +7905,12 @@ function AddCardModal({ collections, cards, allocationPreview, onClose, onAdd, o
             ))}
           </select>
         </Field>
-        <Field label="Foil">
-          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-            <input type="checkbox" checked={foil} onChange={(e) => setFoil(e.target.checked)} />
-            <span style={{ fontSize: 13 }}>Foil copy</span>
-          </label>
-        </Field>
       </div>
+
+      <Field label="Finish">
+        <FinishPicker card={result || {}} value={finish} onChange={setFinish} />
+        {result && <TreatmentTags card={result} />}
+      </Field>
 
       <Field label="Collection">
         <select style={inputStyle} value={collectionId} onChange={(e) => setCollectionId(e.target.value)}>
@@ -5900,45 +7974,154 @@ function AddCardModal({ collections, cards, allocationPreview, onClose, onAdd, o
       </Field>
 
       <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-        {mode === "code" && (
-          <button
-            onClick={() => submit(true)}
-            style={{
-              flex: 2,
-              background: STOCK_BG,
-              color: C.stockInk,
-              border: "none",
-              borderRadius: 6,
-              padding: "11px",
-              fontWeight: 700,
-              fontSize: 14,
-              cursor: "pointer",
-              boxShadow: STOCK_SHADOW,
-            }}
-          >
-            Add &amp; next
-          </button>
-        )}
         <button
-          onClick={() => submit(false)}
+          onClick={() => submit(true)}
+          disabled={!result}
           style={{
-            flex: mode === "code" ? 1 : undefined,
-            width: mode === "code" ? undefined : "100%",
-            background: mode === "code" ? "transparent" : STOCK_BG,
-            color: mode === "code" ? C.parchmentDim : C.stockInk,
-            border: mode === "code" ? `1px solid ${C.border}` : "none",
+            flex: 2,
+            background: result ? STOCK_BG : C.border,
+            color: result ? C.stockInk : C.parchmentDim,
+            border: "none",
             borderRadius: 6,
             padding: "11px",
             fontWeight: 700,
             fontSize: 14,
-            cursor: "pointer",
-            boxShadow: mode === "code" ? "none" : STOCK_SHADOW,
+            cursor: result ? "pointer" : "default",
+            boxShadow: result ? STOCK_SHADOW : "none",
           }}
         >
-          {mode === "code" ? "Add & close" : "Add to vault"}
+          Add &amp; next
+        </button>
+        <button
+          onClick={() => submit(false)}
+          disabled={!result}
+          style={{
+            flex: 1,
+            background: "transparent",
+            color: C.parchmentDim,
+            border: `1px solid ${C.border}`,
+            borderRadius: 6,
+            padding: "11px",
+            fontWeight: 700,
+            fontSize: 14,
+            cursor: result ? "pointer" : "default",
+            opacity: result ? 1 : 0.5,
+          }}
+        >
+          Add &amp; close
         </button>
       </div>
+
+      {/* what this session has put in the vault so far */}
+      {session.length > 0 && (
+        <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+          <div
+            className="mono"
+            style={{
+              fontSize: 9,
+              letterSpacing: 1.4,
+              textTransform: "uppercase",
+              color: C.parchmentDim,
+              marginBottom: 7,
+              display: "flex",
+              justifyContent: "space-between",
+            }}
+          >
+            <span>Added this session</span>
+            <span>
+              {session.reduce((n, x) => n + x.qty, 0)} card
+              {session.reduce((n, x) => n + x.qty, 0) === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div style={{ maxHeight: 116, overflowY: "auto" }}>
+            {session.map((x, i) => (
+              <div
+                key={i}
+                className="mono"
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  fontSize: 10.5,
+                  color: C.parchmentDim,
+                  padding: "2px 0",
+                }}
+              >
+                <span style={{ color: i === 0 ? C.greenBright : C.parchmentDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {i === 0 ? "✓ " : ""}
+                  {x.qty > 1 ? `${x.qty}× ` : ""}
+                  {x.name}
+                </span>
+                <span style={{ flexShrink: 0, opacity: 0.8 }}>
+                  {(x.set || "").toUpperCase()} {x.num || ""}
+                  {x.finish !== "nonfoil" ? ` · ${x.finish}` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </ModalShell>
+  );
+}
+
+function FinishPicker({ card, value, onChange }) {
+  const avail = availableFinishes(card);
+  const opts = FINISHES.filter((f) => avail.includes(f.key));
+  const list = opts.length ? opts : [FINISHES[0]];
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {list.map((f) => {
+        const on = value === f.key;
+        return (
+          <button
+            key={f.key}
+            type="button"
+            onClick={() => onChange(f.key)}
+            style={{
+              background: on ? STOCK_BG : "transparent",
+              color: on ? C.stockInk : C.parchmentDim,
+              border: `1px solid ${on ? C.stock : C.border}`,
+              borderRadius: 5,
+              padding: "7px 13px",
+              fontSize: 12.5,
+              fontWeight: on ? 700 : 500,
+              cursor: "pointer",
+              boxShadow: on ? STOCK_SHADOW : "none",
+            }}
+          >
+            {f.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Read-only description of the printing's treatment.
+function TreatmentTags({ card }) {
+  const tags = treatmentTags(card);
+  if (!tags.length) return null;
+  return (
+    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 7 }}>
+      {tags.map((t) => (
+        <span
+          key={t}
+          className="mono"
+          style={{
+            fontSize: 9,
+            letterSpacing: 0.8,
+            textTransform: "uppercase",
+            border: `1px solid ${C.border}`,
+            color: C.parchmentDim,
+            borderRadius: 3,
+            padding: "2px 7px",
+          }}
+        >
+          {t}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -6335,14 +8518,23 @@ function AddCollectionModal({ onClose, onAdd }) {
 
 const HEADER_HINTS = {
   name: ["name", "card name", "card", "cardname", "title"],
-  set: ["set code", "set", "setcode", "edition", "set id"],
+  set: ["set code", "set", "setcode", "edition", "set id", "set_code"],
   setName: ["set name", "edition name", "setname"],
-  collectorNumber: ["collector number", "collector_number", "card number", "number", "cn"],
+  collectorNumber: [
+    "collector number",
+    "collector_number",
+    "collectornumber",
+    "card number",
+    "number",
+    "cn",
+    "collector #",
+    "card #",
+  ],
   quantity: ["quantity", "qty", "count", "amount"],
-  foil: ["foil", "finish", "printing", "is foil"],
+  foil: ["foil", "finish", "printing", "is foil", "foil?"],
   purchasePrice: ["purchase price", "price", "paid", "cost", "purchase_price"],
   currentValue: ["current value", "market price", "value", "price (current)", "trend price"],
-  scryfallId: ["scryfall id", "scryfall_id", "scryfallid"],
+  scryfallId: ["scryfall id", "scryfall_id", "scryfallid", "scryfall", "id"],
   condition: ["condition", "cond", "grade"],
   language: ["language", "lang"],
   collection: ["binder name", "collection", "binder", "deck", "folder", "list", "group"],
@@ -6563,17 +8755,28 @@ function ImportModal({ collections, onClose, onCreateCollection, onImportCards, 
       if (!p.name && !p.card) return;
       const c = p.card;
       if (!c && lookupPrices) failed.push(p.name || `row ${p.i + 2}`);
-      const foil = truthy(val(p.row, "foil"));
+      // The column may say "foil"/"etched"/"normal" (our own export) or a
+      // yes/no flag (most other tools). Read both.
+      const finishRaw = val(p.row, "foil").trim().toLowerCase();
+      const finish = /etch/.test(finishRaw)
+        ? "etched"
+        : /^(foil|yes|true|1|y)$/.test(finishRaw) || (finishRaw && /foil/.test(finishRaw))
+        ? "foil"
+        : "nonfoil";
+      const foil = finish === "foil";
       built.push({
         id: uid(),
         added: Date.now() + p.i,
         name: c ? c.name : p.name,
         set: c ? c.set : p.setCode,
-        setName: c ? c.setName : "",
+        setName: c ? c.setName : val(p.row, "setName"),
+        collectorNumber: c ? c.collectorNumber : p.cn || "",
+        scryfallId: c ? c.scryfallId : p.sid || null,
         imageUrl: c ? c.imageUrl : null,
         imageUrlLarge: c ? c.imageUrlLarge : null,
         scryfallUri: c ? c.scryfallUri : null,
         quantity: p.qty,
+        finish,
         foil,
         condition: val(p.row, "condition") || "NM",
         collectionId: p.colName
@@ -6593,7 +8796,6 @@ function ImportModal({ collections, onClose, onCreateCollection, onImportCards, 
         typeLine: c ? c.typeLine : "",
         colors: c ? c.colors : [],
         rarity: c ? c.rarity : "",
-        scryfallId: c ? c.scryfallId : null,
       });
     });
 
@@ -6956,7 +9158,7 @@ function ImportModal({ collections, onClose, onCreateCollection, onImportCards, 
 function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onUpdate, onDelete, onSell, onUnsell }) {
   const [deckNote, setDeckNote] = useState("");
   const [quantity, setQuantity] = useState(card.quantity);
-  const [foil, setFoil] = useState(card.foil);
+  const [finish, setFinish] = useState(finishOf(card));
   const [condition, setCondition] = useState(card.condition);
   const [collectionId, setCollectionId] = useState(card.collectionId || UNCATEGORIZED);
   const [costOverride, setCostOverride] = useState(card.costOverride ?? null);
@@ -7032,7 +9234,8 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
   function save() {
     onUpdate({
       quantity: Number(quantity) || 1,
-      foil,
+      finish,
+      foil: finish === "foil", // kept in step for anything reading the old flag
       condition,
       collectionId,
       location: location.trim(),
@@ -7064,7 +9267,7 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
     setRefreshing(false);
   }
 
-  const currentVal = card.foil && card.usdFoil ? card.usdFoil : card.usd ?? 0;
+  const currentVal = priceForFinish(card) ?? 0;
 
   return (
     <ModalShell title={card.name} onClose={onClose} width={640}>
@@ -7082,7 +9285,7 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
             }}
           >
             <CardArt card={card} large />
-            {card.foil && (
+            {finishOf(card) !== "nonfoil" && (
               <>
                 <div className="foil-sheen" />
                 <div className="foil-edge" />
@@ -7360,13 +9563,12 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
             ))}
           </select>
         </Field>
-        <Field label="Foil">
-          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-            <input type="checkbox" checked={foil} onChange={(e) => setFoil(e.target.checked)} />
-            <span style={{ fontSize: 13 }}>Foil</span>
-          </label>
-        </Field>
       </div>
+
+      <Field label="Finish">
+        <FinishPicker card={card} value={finish} onChange={setFinish} />
+        <TreatmentTags card={card} />
+      </Field>
 
       <Field label="Collection">
         <select style={inputStyle} value={collectionId} onChange={(e) => setCollectionId(e.target.value)}>
@@ -7521,3 +9723,14 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
     </ModalShell>
   );
 }
+
+// Exported for the test harness only (see deck-click-test.jsx); unused by the app.
+export const __test_DecksView = DecksView;
+
+// Exported for the test harness only (see roundtrip-test.jsx); unused by the app.
+export const __test_guessMapping = guessMapping;
+export const __test_parseDecklist = parseDecklist;
+export const __test_matchDecklist = matchDecklist;
+export const __test_deckToText = deckToText;
+export const __test_deckToJson = deckToJson;
+export const __test_jsonToParsed = jsonToParsed;

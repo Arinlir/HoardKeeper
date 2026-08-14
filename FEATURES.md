@@ -43,6 +43,8 @@
 | ☑️ | Bulk select (shift-click ranges) with bulk edit: collection, location, condition, finish, price, or add-to-deck |
 | 🎯 | Adding a card scrolls to it with a highlight; a floating **+** button stays reachable while scrolling |
 
+<img width="1191" height="631" alt="image" src="https://github.com/user-attachments/assets/296edbd0-1033-4f62-80fb-333edccdc4fb" />
+
 ## 💰 Cost basis
 
 > Built for people who buy **sealed product**, not just singles.
@@ -62,12 +64,18 @@
 <tr><td><b>🩹 Fix bad data</b></td><td>"Change art" swaps a card's printing; "wrong card" re-identifies it entirely — both preserve quantity, condition, collection, location, and cost basis.</td></tr>
 </table>
 
+<img width="585" height="808" alt="image" src="https://github.com/user-attachments/assets/80a23e55-2466-4dd2-9886-78f362b4d9bd" />
+
+
 ## 📦 Sets
 
 - ✅ Completion percentage per set, with **per-rarity progress bars**
 - 📋 Full set roster from Scryfall with **+/− steppers**, filterable to All / Missing / Owned
 - 💸 Estimated cost to **complete a set** at current market prices
 - 🖱️ Hover any roster card for an artwork preview, plus a direct Cardmarket link
+
+<img width="1188" height="251" alt="image" src="https://github.com/user-attachments/assets/fa1a40ce-6255-43d0-bdce-d063a997a8e1" />
+
 
 ## 🃏 Deck building
 
@@ -76,6 +84,10 @@ Pick any legendary creature you own → auto-draft the 99 from your collection:
 - Color identity + singleton, with correct exceptions for **basic lands** and cards that read *"any number of cards named…"*
 - Role quotas — lands / ramp / draw / removal / board wipes
 - Synergy scoring against your commander's text and creature types
+
+<img width="1158" height="893" alt="image" src="https://github.com/user-attachments/assets/bf64d460-9b37-44f3-bd9f-4814ab3cebbc" />
+
+<img width="1162" height="717" alt="image" src="https://github.com/user-attachments/assets/d75a7416-25f8-4165-abea-a3c107ad5d31" />
 
 ### 🎴 60-card constructed
 Pick colors → up to **4 copies** per card, capped by what you actually own, ~24 lands, theme inferred from your most common creature type.
@@ -94,6 +106,9 @@ Pick colors → up to **4 copies** per card, capped by what you actually own, ~2
 
 A plain-language guide to **~40 keywords and mechanics** — but only the ones that actually appear in *your* cards, with live counts and real examples pulled from your own collection.
 
+<img width="1158" height="457" alt="image" src="https://github.com/user-attachments/assets/1a7e7231-8f9a-41a1-ab45-a7e9a05f3e5a" />
+
+
 ## ❤️ Life Counter
 
 <div align="center">
@@ -106,9 +121,15 @@ A plain-language guide to **~40 keywords and mechanics** — but only the ones t
 - ⚔️ Per-opponent commander damage tracking with a **lethal (21+)** highlight
 - 💫 Floating damage/heal indicators — rapid taps accumulate into one number, linger while you keep tapping, then fade away once you stop
 
+<img width="1857" height="917" alt="image" src="https://github.com/user-attachments/assets/8cfb6c17-94e3-4ca9-810c-6da8001ed7bb" />
+
+
 ## 📊 Portfolio charts
 
 Color identity breakdown • Top-value cards • Paid vs. worth by collection • Value over time • Mana curve • Rarity value distribution • Biggest movers since your last refresh
+
+<img width="1194" height="760" alt="image" src="https://github.com/user-attachments/assets/07eb74de-da7e-4445-a888-ac7d80c92bc5" />
+
 
 ## 🔄 Data & interoperability
 
@@ -116,7 +137,7 @@ Color identity breakdown • Top-value cards • Paid vs. worth by collection �
 - Deck import/export compatible with the major deckbuilding sites' list formats
 
 ## 🔐 Hosting & accounts
-
+- ❗ If you are running Hoardkeeper directly from the start.bat there is no account option. This feature is reserved for the docker release.
 <table>
 <tr>
 <th align="left">🏠 Self-hosted edition</th>
@@ -139,11 +160,10 @@ Color identity breakdown • Top-value cards • Paid vs. worth by collection �
 ## ⚡ Performance & reliability
 
 - 🚀 Card pricing and rendering optimized to avoid full-collection rescans — stays responsive at hundreds of cards
-- 🧠 Memoized card tiles, so unrelated interface changes don't force the whole grid to re-render
+- 🧠 Memorized card tiles, so unrelated interface changes don't force the whole grid to re-render
 - 🧪 **Ten automated test suites** covering deck interactions, import/export round-trips, responsive layout, and core financial logic
 
 ---
-
 <div align="center">
 
 *Card data and prices courtesy of [Scryfall](https://scryfall.com). Magic: The Gathering is a trademark of Wizards of the Coast; HoardKeeper is an unaffiliated fan project.*

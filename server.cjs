@@ -122,6 +122,44 @@ async function api(req, res, url) {
       fs.renameSync(file + ".tmp", file);
       return json(res, 201, { ok: true, created: true });
     }
+
+    // DELETE /api/store/:name — remove a profile entirely, authenticated
+    // with its own current PIN (or no header at all if it has none set).
+    if (req.method === "DELETE") {
+      if (!fs.existsSync(file)) return json(res, 404, { error: "No such profile" });
+      const rec = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (rec.pinHash && rec.pinHash !== hash(pin))
+        return json(res, 403, { error: "Wrong PIN" });
+      fs.unlinkSync(file);
+      return json(res, 200, { ok: true, deleted: true });
+    }
+  }
+
+  // PUT /api/store/:name/pin — change a profile's PIN. Authenticated with
+  // the CURRENT pin via the x-pin header; the new one travels in the body
+  // so it never lands in a URL or a proxy's access log.
+  const pm = url.pathname.match(/^\/api\/store\/([^/]+)\/pin$/);
+  if (pm && req.method === "PUT") {
+    const name = pm[1].toLowerCase();
+    if (!safeName(name))
+      return json(res, 400, { error: "Profile names: 1-24 chars, a-z 0-9 - _" });
+    const file = profilePath(name);
+    if (!fs.existsSync(file)) return json(res, 404, { error: "No such profile" });
+    const rec = JSON.parse(fs.readFileSync(file, "utf8"));
+    const currentPin = req.headers["x-pin"] || "";
+    if (rec.pinHash && rec.pinHash !== hash(currentPin))
+      return json(res, 403, { error: "Current PIN is wrong" });
+    let body;
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch (e) {
+      return json(res, 400, { error: "Bad JSON" });
+    }
+    rec.pinHash = body.newPin ? hash(body.newPin) : "";
+    rec.updated = Date.now();
+    fs.writeFileSync(file + ".tmp", JSON.stringify(rec));
+    fs.renameSync(file + ".tmp", file);
+    return json(res, 200, { ok: true });
   }
 
   return json(res, 404, { error: "Not found" });

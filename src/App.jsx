@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   Plus, Upload, RefreshCw, Search, X, TrendingUp, TrendingDown,
   Sparkles, Trash2, Pencil, Download, Layers, ChevronDown, Check,
-  AlertCircle, Loader2, LibraryBig, BarChart3, Coins, CheckSquare, Square, MapPin, Tag
+  AlertCircle, Loader2, LibraryBig, BarChart3, Coins, CheckSquare, Square, MapPin, Tag,
+  RotateCcw, RotateCw, Swords, Users, Settings, Heart
 } from "lucide-react";
 import Papa from "papaparse";
 import {
@@ -429,6 +430,14 @@ export default function App() {
   const [view, setView] = useState("collection");
 
   const [showAddCard, setShowAddCard] = useState(false);
+  const [scrollToCardId, setScrollToCardId] = useState(null);
+  const [scrolledPastHeader, setScrolledPastHeader] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setScrolledPastHeader(window.scrollY > 260);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
   const [showAddCollection, setShowAddCollection] = useState(false);
   const [showCollections, setShowCollections] = useState(false);
   const [sellCard, setSellCard] = useState(null);
@@ -445,6 +454,7 @@ export default function App() {
   const [decks, setDecks] = useState([]);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState([]);
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [lastTapped, setLastTapped] = useState(null);
   const [notice, setNotice] = useState("");
@@ -509,6 +519,23 @@ export default function App() {
     })();
   }, []);
 
+  // After adding a card and closing the dialog, find its tile once the grid
+  // has re-rendered and bring it into view with a brief highlight.
+  useEffect(() => {
+    if (!scrollToCardId) return;
+    const id = scrollToCardId;
+    const raf = requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-card-id="${id}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("just-added");
+        setTimeout(() => el.classList.remove("just-added"), 1800);
+      }
+      setScrollToCardId(null);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [scrollToCardId, cards]);
+
   // load
   useEffect(() => {
     if (boot !== "ready") return;
@@ -566,19 +593,41 @@ export default function App() {
     if (!collectionId || collectionId === UNCATEGORIZED) return null;
     const collection = collections.find((c) => c.id === collectionId);
     if (!collection) return null;
-    const siblings = cards.filter((c) => c.collectionId === collectionId);
-    const overrideSum = siblings
-      .filter((c) => c.costOverride !== null && c.costOverride !== undefined)
-      .reduce((s, c) => s + (c.costOverride || 0), 0);
-    const remaining = Math.max(0, (collection.purchasePrice || 0) - overrideSum);
-    const sharers =
-      siblings.filter((c) => c.costOverride === null || c.costOverride === undefined).length + 1;
+    const stats = collectionStats[collectionId] || { overrideSum: 0, noOverrideCount: 0 };
+    const remaining = Math.max(0, (collection.purchasePrice || 0) - stats.overrideSum);
+    const sharers = stats.noOverrideCount + 1;
     return { each: remaining / sharers, sharers, total: collection.purchasePrice || 0 };
   }
 
+  // One pass over the collection builds every collection's totals, so pricing
+  // a card is a map lookup instead of a fresh scan of the whole collection.
+  // allocatedCost used to be O(collection size) per card — O(n²) for the grid
+  // as a whole — which is the main thing that made typing in search or
+  // toggling a filter feel sluggish once the collection grew past a couple
+  // hundred cards.
+  const collectionStats = useMemo(() => {
+    const m = {};
+    cards.forEach((c) => {
+      const key = c.collectionId || UNCATEGORIZED;
+      const s = (m[key] = m[key] || { overrideSum: 0, noOverrideCount: 0 });
+      if (c.costOverride !== null && c.costOverride !== undefined) {
+        s.overrideSum += c.costOverride || 0;
+      } else {
+        s.noOverrideCount += 1;
+      }
+    });
+    return m;
+  }, [cards]);
+
+  const collectionNameMap = useMemo(() => {
+    const m = {};
+    collections.forEach((c) => (m[c.id] = c.name));
+    return m;
+  }, [collections]);
+
   function collectionName(id) {
     if (id === UNCATEGORIZED || !id) return "Uncategorized";
-    return collections.find((c) => c.id === id)?.name || "Uncategorized";
+    return collectionNameMap[id] || "Uncategorized";
   }
 
   function allocatedCost(card) {
@@ -588,21 +637,14 @@ export default function App() {
     if (!card.collectionId || card.collectionId === UNCATEGORIZED) return 0;
     const collection = collections.find((c) => c.id === card.collectionId);
     if (!collection) return 0;
-    const siblings = cards.filter((c) => c.collectionId === card.collectionId);
-    const withOverride = siblings.filter(
-      (c) => c.costOverride !== null && c.costOverride !== undefined
-    );
-    const noOverride = siblings.filter(
-      (c) => c.costOverride === null || c.costOverride === undefined
-    );
-    const overrideSum = withOverride.reduce((s, c) => s + (c.costOverride || 0), 0);
+    const stats = collectionStats[card.collectionId];
+    if (!stats || stats.noOverrideCount === 0) return 0;
     // Individual prices can exceed the collection total (a CSV import with
     // per-card prices, or hand-edited figures). Cost can never be negative, so
     // clamp at zero — otherwise the leftover cards absorb a negative cost and
     // report an enormous phantom gain.
-    const remaining = Math.max(0, collection.purchasePrice - overrideSum);
-    if (noOverride.length === 0) return 0;
-    return remaining / noOverride.length;
+    const remaining = Math.max(0, collection.purchasePrice - stats.overrideSum);
+    return remaining / stats.noOverrideCount;
   }
 
   // How much the individual prices in a collection exceed its stated total.
@@ -610,15 +652,8 @@ export default function App() {
   function overAllocation(collectionId) {
     const collection = collections.find((c) => c.id === collectionId);
     if (!collection) return 0;
-    const overrideSum = cards
-      .filter(
-        (c) =>
-          c.collectionId === collectionId &&
-          c.costOverride !== null &&
-          c.costOverride !== undefined
-      )
-      .reduce((s, c) => s + (c.costOverride || 0), 0);
-    return Math.max(0, overrideSum - collection.purchasePrice);
+    const stats = collectionStats[collectionId];
+    return Math.max(0, (stats?.overrideSum || 0) - collection.purchasePrice);
   }
 
   function currentUnitValue(card) {
@@ -697,10 +732,11 @@ export default function App() {
   }, [cards, activeFilter, search, sortBy, typeFilter, colorFilter, collections]);
 
   function addCard(cardData) {
+    const id = uid();
     setCards((prev) => [
       ...prev,
       {
-        id: uid(),
+        id,
         added: Date.now(),
         name: cardData.name,
         set: cardData.set || "",
@@ -726,6 +762,7 @@ export default function App() {
         scryfallId: cardData.scryfallId || null,
       },
     ]);
+    return id;
   }
 
   function updateCard(id, patch) {
@@ -998,6 +1035,8 @@ export default function App() {
     return { added: newEntries.length, skipped };
   }
 
+  const toggleSelectRef = useRef(null);
+
   function toggleSelect(id, shiftKey) {
     // Shift-click selects everything between the last tapped card and this one.
     if (shiftKey && lastTapped && lastTapped !== id) {
@@ -1016,6 +1055,19 @@ export default function App() {
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   }
+  toggleSelectRef.current = toggleSelect;
+
+  // Stable across renders (only changes when selectMode flips), so passing
+  // it as CardTile's onClick lets React.memo skip cards whose own props
+  // didn't change, instead of every visible tile re-rendering on any
+  // unrelated state change elsewhere in the app.
+  const handleCardClick = useCallback(
+    (card, e) => {
+      if (selectMode) toggleSelectRef.current(card.id, e.shiftKey);
+      else setDetailCard(card);
+    },
+    [selectMode]
+  );
 
   function exitSelectMode() {
     setSelectMode(false);
@@ -1252,10 +1304,57 @@ export default function App() {
         }
         @keyframes rowflash { 0% { background: rgba(232,236,241,0.14); } 100% { background: transparent; } }
         .rowflash { animation: rowflash 0.5s ease; }
+        /* Floating add-card button: appears once you've scrolled past the header. */
+        .fab-add {
+          animation: fab-in 0.18s ease-out;
+          transition: transform 0.12s ease;
+        }
+        .fab-add:hover { transform: scale(1.06); }
+        .fab-add:active { transform: scale(0.96); }
+        @keyframes fab-in {
+          from { opacity: 0; transform: scale(0.7) translateY(8px); }
+          to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+
+        /* Freshly added card: a gold pulse so the eye finds it after the scroll. */
+        .card-tile.just-added .sleeve {
+          animation: just-added-pulse 1.8s ease-out;
+        }
+        @keyframes just-added-pulse {
+          0% { box-shadow: 0 0 0 3px ${C.goldBright}, 0 0 24px 4px rgba(232,236,241,0.5); }
+          100% { box-shadow: 0 10px 20px -8px rgba(0,0,0,0.8), inset 0 0 0 1px rgba(232,236,241,0.12); }
+        }
+
+        /* ---------- responsive scaling ---------- */
+        /* Nav tabs: swipeable strip instead of wrapping or overflowing on phones */
+        .nav-tabs {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+        }
+        .nav-tabs::-webkit-scrollbar { display: none; }
+
+        /* Set roster row: five fixed columns is fine on desktop, unusable under
+           ~560px — collapse to name + stepper and hide price/link there. */
+        .roster-row {
+          grid-template-columns: 52px 1fr 90px 100px 110px;
+        }
+        @media (max-width: 560px) {
+          .roster-row { grid-template-columns: 34px 1fr 96px; column-gap: 8px; }
+          .roster-row .roster-price, .roster-row .roster-link { display: none; }
+        }
+
+        /* Card grid: fewer, wider tiles below ~420px so art stays legible
+           instead of shrinking into unreadable thumbnails. */
+        @media (max-width: 420px) {
+          .card-grid { grid-template-columns: repeat(2, 1fr) !important; }
+        }
+
         @media (prefers-reduced-motion: reduce) {
           .card-tile, .sleeve { transition: none; }
           .rowflash { animation: none; }
           .foil-sheen, .foil-sheen::before, .foil-sheen::after, .foil-edge, .foil-text { animation: none; }
+          .fab-add, .card-tile.just-added .sleeve { animation: none; }
         }
       `}</style>
       <div className="felt-weave" />
@@ -1274,13 +1373,19 @@ export default function App() {
         showCharts={showCharts}
         onToggleCharts={() => setShowCharts((s) => !s)}
         onSettings={() => setShowSettings(true)}
+        profileName={serverMode && authMode !== "accounts" ? store.profile : null}
+        onSwitchProfile={() => {
+          localStorage.removeItem("lf-profile");
+          window.location.reload();
+        }}
       />
 
-      <div style={{ display: "flex", gap: 8, padding: "10px 30px 0" }}>
+      <div className="nav-tabs" style={{ display: "flex", gap: 8, padding: "10px clamp(14px, 4vw, 30px) 0" }}>
         <ViewTab label="Collection" active={view === "collection"} onClick={() => setView("collection")} />
         <ViewTab label="Sets" active={view === "sets"} onClick={() => setView("sets")} />
         <ViewTab label="Decks" active={view === "decks"} onClick={() => setView("decks")} />
         <ViewTab label="Glossary" active={view === "glossary"} onClick={() => setView("glossary")} />
+        <ViewTab label="Life" active={view === "life"} onClick={() => setView("life")} />
       </div>
 
       {view === "collection" && (
@@ -1333,6 +1438,8 @@ export default function App() {
 
       {view === "glossary" ? (
         <GlossaryView cards={cards} />
+      ) : view === "life" ? (
+        <LifeCounterView onExit={() => setView("collection")} />
       ) : view === "decks" ? (
         <DecksView
           cards={cards}
@@ -1349,7 +1456,7 @@ export default function App() {
           onRemoveCopy={removeCopyFromRoster}
         />
       ) : (
-      <main style={{ padding: "8px 28px 48px" }}>
+      <main style={{ padding: "8px clamp(14px, 4vw, 28px) 48px" }}>
         {loaded && cards.length === 0 && (
           <EmptyState onAddCard={() => setShowAddCard(true)} onImport={() => setShowImport(true)} />
         )}
@@ -1367,6 +1474,7 @@ export default function App() {
         )}
 
         <div
+          className="card-grid"
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
@@ -1383,10 +1491,8 @@ export default function App() {
               cost={allocatedCost(card)}
               value={currentUnitValue(card) * card.quantity}
               selectMode={selectMode}
-              selected={selected.includes(card.id)}
-              onClick={(e) =>
-                selectMode ? toggleSelect(card.id, e.shiftKey) : setDetailCard(card)
-              }
+              selected={selectedSet.has(card.id)}
+              onClick={handleCardClick}
             />
           ))}
         </div>
@@ -1446,6 +1552,33 @@ export default function App() {
         />
       )}
 
+      {view === "collection" && scrolledPastHeader && !selectMode && (
+        <button
+          onClick={() => setShowAddCard(true)}
+          title="Add card"
+          className="fab-add"
+          style={{
+            position: "fixed",
+            right: "clamp(14px, 4vw, 30px)",
+            bottom: "clamp(14px, 4vw, 30px)",
+            zIndex: 40,
+            width: 54,
+            height: 54,
+            borderRadius: "50%",
+            background: STOCK_BG,
+            color: C.stockInk,
+            border: "none",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            boxShadow: "0 10px 24px -6px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(40,44,50,0.4)",
+          }}
+        >
+          <Plus size={24} />
+        </button>
+      )}
+
       {showAddCard && (
         <AddCardModal
           defaultCollectionId={
@@ -1456,8 +1589,17 @@ export default function App() {
           allocationPreview={allocationPreview}
           onClose={() => setShowAddCard(false)}
           onAdd={(data, keepOpen) => {
-            addCard(data);
-            if (!keepOpen) setShowAddCard(false);
+            const id = addCard(data);
+            if (!keepOpen) {
+              setShowAddCard(false);
+              // Clear filters so the card that was just added can't be hidden
+              // by a stale search, type, or color filter when we scroll to it.
+              setActiveFilter("all");
+              setTypeFilter("all");
+              setColorFilter("all");
+              setSearch("");
+              setScrollToCardId(id);
+            }
           }}
           onCreateCollection={addCollection}
         />
@@ -1556,11 +1698,16 @@ function Header({
   showCharts,
   onToggleCharts,
   onSettings,
+  // Who's signed in, and how to switch -- surfaced directly in the header
+  // rather than buried behind the currency/Settings button, which nothing
+  // about visually suggests "this is where profiles live."
+  profileName,
+  onSwitchProfile,
 }) {
   return (
     <header
       style={{
-        padding: "26px 30px 6px",
+        padding: "26px clamp(14px, 4vw, 30px) 6px",
         display: "flex",
         alignItems: "flex-end",
         justifyContent: "space-between",
@@ -1572,7 +1719,7 @@ function Header({
         <h1
           className="display"
           style={{
-            fontSize: 28,
+            fontSize: "clamp(21px, 6vw, 28px)",
             margin: 0,
             fontWeight: 700,
             letterSpacing: 1.5,
@@ -1619,8 +1766,16 @@ function Header({
       </div>
 
       <div style={{ width: "100%", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 4 }}>
+        {profileName && (
+          <IconButton
+            onClick={onSwitchProfile}
+            label={`${profileName} · switch`}
+            icon={<Users size={15} />}
+            title="Switch to a different profile"
+          />
+        )}
         <IconButton onClick={onToggleCharts} label={showCharts ? "Hide charts" : "Charts"} icon={<BarChart3 size={15} />} active={showCharts} />
-        <IconButton onClick={onSettings} label={CUR.code} icon={<Coins size={15} />} />
+        <IconButton onClick={onSettings} label="Settings" icon={<Settings size={15} />} title={`Currency: ${CUR.code}`} />
         <IconButton onClick={onImport} label="Import CSV" icon={<Upload size={15} />} />
         <IconButton onClick={onExport} label="Export" icon={<Download size={15} />} />
         <IconButton
@@ -1676,6 +1831,8 @@ function ViewTab({ label, active, onClick }) {
         padding: "8px 18px",
         cursor: "pointer",
         boxShadow: active ? "0 2px 0 rgba(0,0,0,0.4)" : "none",
+        whiteSpace: "nowrap",
+        flexShrink: 0,
       }}
     >
       {label}
@@ -1720,11 +1877,12 @@ function StatPlaque({ label, value, tone, sub }) {
   );
 }
 
-function IconButton({ onClick, label, icon, disabled, active }) {
+function IconButton({ onClick, label, icon, disabled, active, title }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
+      title={title}
       style={{
         display: "flex",
         alignItems: "center",
@@ -1761,7 +1919,7 @@ function FilterBar({ collections, cards, active, setActive, search, setSearch, s
   return (
     <div
       style={{
-        padding: "14px 28px",
+        padding: "14px clamp(14px, 4vw, 28px)",
         display: "flex",
         gap: 14,
         alignItems: "center",
@@ -2470,11 +2628,11 @@ function CardFace({ card }) {
   );
 }
 
-function CardTile({ card, collectionName, cost, value, onClick, selectMode, selected }) {
+const CardTile = React.memo(function CardTile({ card, collectionName, cost, value, onClick, selectMode, selected }) {
   const delta = value - cost;
   const up = delta >= 0;
   return (
-    <div className="card-tile" onClick={(e) => onClick(e)}>
+    <div className="card-tile" data-card-id={card.id} onClick={(e) => onClick(card, e)}>
       <div
         className="sleeve"
         style={{
@@ -2671,7 +2829,7 @@ function CardTile({ card, collectionName, cost, value, onClick, selectMode, sele
       </div>
     </div>
   );
-}
+});
 
 /* ============================================================
    DECKS — commander deck building with an auto-drafter
@@ -3429,12 +3587,31 @@ function ProfileGate({ onEnter }) {
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // Distinct from "no profiles yet" — a fetch failure (commonly the data
+  // volume being unwritable) used to be swallowed silently, which looked
+  // identical to there being no way to switch profiles at all.
+  const [listError, setListError] = useState("");
+
+  function loadProfiles() {
+    setListError("");
+    fetch("/api/profiles")
+      .then(async (r) => {
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || `Server returned ${r.status}`);
+        }
+        return r.json();
+      })
+      .then((d) => setProfiles(d.profiles || []))
+      .catch((e) =>
+        setListError(
+          `Couldn't load existing profiles (${e.message}). Check the server's data volume is writable.`
+        )
+      );
+  }
 
   useEffect(() => {
-    fetch("/api/profiles")
-      .then((r) => r.json())
-      .then((d) => setProfiles(d.profiles || []))
-      .catch(() => {});
+    loadProfiles();
   }, []);
 
   async function enterExisting() {
@@ -3546,6 +3723,38 @@ function ProfileGate({ onEnter }) {
 
         {!creating && !chosen && (
           <>
+            {listError && (
+              <div
+                style={{
+                  color: C.redBright,
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  marginBottom: 12,
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "flex-start",
+                }}
+              >
+                <AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>
+                  {listError}{" "}
+                  <button
+                    onClick={loadProfiles}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: C.redBright,
+                      textDecoration: "underline",
+                      cursor: "pointer",
+                      padding: 0,
+                      fontSize: 12,
+                    }}
+                  >
+                    Retry
+                  </button>
+                </span>
+              </div>
+            )}
             {profiles.map((p) => (
               <button
                 key={p}
@@ -3791,6 +4000,510 @@ const KEYWORD_GUIDE = [
   { k: "The Ring tempts you", re: /the ring tempts you/, d: "A Lord of the Rings mechanic: each temptation upgrades your Ring's powers and picks a Ring-bearer creature that gets progressively harder to block and more dangerous." },
 ];
 
+/* ============================================================
+   LIFE COUNTER — live game tracker (Commander / Normal)
+   ============================================================ */
+
+const LIFE_STARTING = { commander: 40, normal: 20 };
+const LIFE_STORAGE_KEY = "hk-life-tracker";
+
+function makeLifePlayer(id, name, life) {
+  return { id, name, life, cmdDmg: {} };
+}
+
+function loadSavedLife() {
+  try {
+    const s = JSON.parse(localStorage.getItem(LIFE_STORAGE_KEY));
+    if (s && Array.isArray(s.players) && s.players.length >= 2) return s;
+  } catch (e) {}
+  return null;
+}
+
+const lifeIconBtn = {
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  padding: 3,
+  display: "flex",
+  alignItems: "center",
+};
+const lifeStepBtn = {
+  background: "rgba(185,191,199,0.1)",
+  border: `1px solid rgba(185,191,199,0.25)`,
+  borderRadius: 5,
+  color: C.parchment,
+  fontSize: 12.5,
+  fontWeight: 600,
+  padding: "5px 11px",
+  cursor: "pointer",
+};
+const lifeTinyBtn = {
+  background: "rgba(185,191,199,0.1)",
+  border: `1px solid rgba(185,191,199,0.25)`,
+  borderRadius: 3,
+  color: C.parchment,
+  fontSize: 11,
+  width: 20,
+  height: 20,
+  cursor: "pointer",
+  lineHeight: 1,
+};
+function lifeCountBtn(disabled) {
+  return {
+    background: "none",
+    border: `1px solid rgba(185,191,199,0.25)`,
+    borderRadius: 3,
+    color: disabled ? "rgba(139,144,151,0.4)" : C.parchmentDim,
+    width: 20,
+    height: 20,
+    cursor: disabled ? "default" : "pointer",
+    fontSize: 13,
+    lineHeight: 1,
+  };
+}
+
+function LifeCounterView({ onExit }) {
+  const idRef = useRef(1);
+
+  const [format, setFormat] = useState(() => loadSavedLife()?.format || "commander");
+  const [players, setPlayers] = useState(() => {
+    const saved = loadSavedLife();
+    if (saved) {
+      idRef.current = Math.max(...saved.players.map((p) => p.id)) + 1;
+      return saved.players;
+    }
+    idRef.current = 5;
+    return [1, 2, 3, 4].map((i) => makeLifePlayer(i, `Player ${i}`, LIFE_STARTING.commander));
+  });
+  const [expanded, setExpanded] = useState(null);
+  const [rotated, setRotated] = useState({});
+
+  // Floating "-N" / "+N" delta badges: taps accumulate into a running total
+  // per player. The badge lingers while taps keep coming, then — once idle —
+  // holds a moment before fading and scaling away, so a burst of quick taps
+  // reads as one clear number instead of a blur of individual flashes.
+  const [badges, setBadges] = useState({});
+  const badgeTimers = useRef({});
+  const badgePoofTimers = useRef({});
+  const LINGER_MS = 900;
+  const POOF_MS = 550;
+
+  useEffect(() => {
+    return () => {
+      Object.values(badgeTimers.current).forEach(clearTimeout);
+      Object.values(badgePoofTimers.current).forEach(clearTimeout);
+    };
+  }, []);
+
+  function bumpBadge(id, delta) {
+    setBadges((b) => {
+      const cur = b[id];
+      const amount = (cur && !cur.fading ? cur.amount : 0) + delta;
+      return { ...b, [id]: { amount, fading: false } };
+    });
+    clearTimeout(badgeTimers.current[id]);
+    clearTimeout(badgePoofTimers.current[id]);
+    badgeTimers.current[id] = setTimeout(() => {
+      setBadges((b) => (b[id] ? { ...b, [id]: { ...b[id], fading: true } } : b));
+      badgePoofTimers.current[id] = setTimeout(() => {
+        setBadges((b) => {
+          if (!b[id]) return b;
+          const next = { ...b };
+          delete next[id];
+          return next;
+        });
+      }, POOF_MS);
+    }, LINGER_MS);
+  }
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LIFE_STORAGE_KEY, JSON.stringify({ format, players }));
+    } catch (e) {}
+  }, [format, players]);
+
+  const maxPlayers = format === "commander" ? 6 : 4;
+  const minPlayers = 2;
+
+  function setFormatAndReset(f) {
+    if (f === format) return;
+    const start = LIFE_STARTING[f];
+    setFormat(f);
+    setPlayers((ps) => (f === "commander" ? ps : ps.slice(0, 4)).map((p) => ({ ...p, life: start, cmdDmg: {} })));
+    setBadges({});
+  }
+
+  function addPlayer() {
+    setPlayers((ps) => {
+      if (ps.length >= maxPlayers) return ps;
+      const id = idRef.current++;
+      return [...ps, makeLifePlayer(id, `Player ${ps.length + 1}`, LIFE_STARTING[format])];
+    });
+  }
+
+  function removePlayer() {
+    setPlayers((ps) => (ps.length <= minPlayers ? ps : ps.slice(0, -1)));
+  }
+
+  function newGame() {
+    const start = LIFE_STARTING[format];
+    setPlayers((ps) => ps.map((p) => ({ ...p, life: start, cmdDmg: {} })));
+    setExpanded(null);
+    setBadges({});
+  }
+
+  function adjustLife(id, delta) {
+    setPlayers((ps) => ps.map((p) => (p.id === id ? { ...p, life: p.life + delta } : p)));
+    bumpBadge(id, delta);
+  }
+
+  function resetPlayer(id) {
+    const start = LIFE_STARTING[format];
+    setPlayers((ps) => ps.map((p) => (p.id === id ? { ...p, life: start, cmdDmg: {} } : p)));
+  }
+
+  function renamePlayer(id, name) {
+    setPlayers((ps) => ps.map((p) => (p.id === id ? { ...p, name } : p)));
+  }
+
+  function adjustCmdDmg(id, fromId, delta) {
+    setPlayers((ps) =>
+      ps.map((p) => {
+        if (p.id !== id) return p;
+        const next = Math.max(0, (p.cmdDmg[fromId] || 0) + delta);
+        return { ...p, cmdDmg: { ...p.cmdDmg, [fromId]: next } };
+      })
+    );
+  }
+
+  const cols = players.length <= 2 ? 1 : players.length <= 4 ? 2 : 3;
+  const rows = Math.ceil(players.length / cols);
+
+  // The life number used a flat vw-based clamp regardless of column count,
+  // so at 3 columns (5-6 players) it stayed close to full size while its
+  // cell shrank to a third of the screen width — the number then collided
+  // with the buttons and hint text beneath it. Scale both the vw factor and
+  // the px ceiling down as columns increase, and cap by vh too so a wide,
+  // short window (the common case that triggered this) can't blow past the
+  // cell's actual height either.
+  const NUMBER_VW = { 1: 9, 2: 6.5, 3: 5 };
+  const NUMBER_MAX_PX = { 1: 96, 2: 78, 3: 62 };
+  const numberFontSize = `clamp(28px, min(${NUMBER_VW[cols]}vw, 32vh), ${NUMBER_MAX_PX[cols]}px)`;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 95,
+        background: `radial-gradient(ellipse 130% 90% at 50% -20%, #232629 0%, ${C.bg} 55%, #121417 100%)`,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
+      <style>{`
+        @keyframes life-badge-in {
+          from { opacity: 0; transform: translateY(4px) scale(0.75); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes life-badge-poof {
+          0% { opacity: 1; transform: translateY(0) scale(1); }
+          40% { opacity: 1; transform: translateY(-6px) scale(1.12); }
+          100% { opacity: 0; transform: translateY(-22px) scale(0.7); }
+        }
+        .life-badge { animation: life-badge-in 0.16s ease-out; }
+        .life-badge.poofing { animation: life-badge-poof ${POOF_MS}ms ease-in forwards; }
+        @media (prefers-reduced-motion: reduce) {
+          .life-badge, .life-badge.poofing { animation: none; }
+        }
+      `}</style>
+
+      {/* top bar */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+          flexWrap: "wrap",
+          padding: "14px clamp(14px, 4vw, 28px)",
+          borderBottom: `1px solid rgba(185,191,199,0.15)`,
+          flexShrink: 0,
+        }}
+      >
+        <div className="serif" style={{ fontSize: 16, fontWeight: 600, color: C.goldBright }}>
+          Life Counter
+        </div>
+
+        <div style={{ display: "flex", gap: 6 }}>
+          {["commander", "normal"].map((f) => (
+            <button
+              key={f}
+              onClick={() => setFormatAndReset(f)}
+              style={{
+                background: format === f ? STOCK_BG : "transparent",
+                color: format === f ? C.stockInk : C.parchmentDim,
+                border: `1px solid ${format === f ? C.stock : "rgba(185,191,199,0.26)"}`,
+                borderRadius: 4,
+                padding: "6px 14px",
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: "pointer",
+                textTransform: "capitalize",
+              }}
+            >
+              {f} · {LIFE_STARTING[f]}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.parchmentDim, fontSize: 12.5 }}>
+          <Users size={14} />
+          <button onClick={removePlayer} disabled={players.length <= minPlayers} style={lifeCountBtn(players.length <= minPlayers)}>
+            −
+          </button>
+          <span className="mono" style={{ color: C.parchment, minWidth: 14, textAlign: "center" }}>
+            {players.length}
+          </span>
+          <button onClick={addPlayer} disabled={players.length >= maxPlayers} style={lifeCountBtn(players.length >= maxPlayers)}>
+            +
+          </button>
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        <button
+          onClick={newGame}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            background: STOCK_BG,
+            color: C.stockInk,
+            border: "none",
+            borderRadius: 5,
+            padding: "8px 14px",
+            fontWeight: 700,
+            fontSize: 12.5,
+            cursor: "pointer",
+            boxShadow: STOCK_SHADOW,
+          }}
+        >
+          <RotateCcw size={14} /> New Game
+        </button>
+
+        <button
+          onClick={onExit}
+          title="Exit life counter"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            background: "transparent",
+            color: C.parchmentDim,
+            border: `1px solid rgba(185,191,199,0.26)`,
+            borderRadius: 5,
+            padding: "8px 12px",
+            fontWeight: 600,
+            fontSize: 12.5,
+            cursor: "pointer",
+          }}
+        >
+          <X size={14} /> Exit
+        </button>
+      </div>
+
+      {/* player grid — fills the remaining screen */}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "grid",
+          gridTemplateColumns: `repeat(${cols}, 1fr)`,
+          gridTemplateRows: `repeat(${rows}, 1fr)`,
+          gap: 1,
+          background: "rgba(185,191,199,0.15)",
+          overflow: "auto",
+        }}
+      >
+        {players.map((p) => {
+          const start = LIFE_STARTING[format];
+          const lethal = Object.values(p.cmdDmg).some((v) => v >= 21);
+          const badge = badges[p.id];
+          return (
+            <div
+              key={p.id}
+              style={{
+                background: C.bg,
+                padding: "14px clamp(12px, 2.5vw, 20px) 16px",
+                transform: rotated[p.id] ? "rotate(180deg)" : "none",
+                transition: "transform 0.25s ease",
+                display: "flex",
+                flexDirection: "column",
+                // A grid cell won't shrink its content below intrinsic size on
+                // its own — min-width/min-height:0 lets flex children actually
+                // shrink to fit, and overflow:hidden is the backstop so an
+                // expanded commander-damage list (or anything else) can never
+                // visually spill into a neighboring cell, whatever the cause.
+                minHeight: 0,
+                minWidth: 0,
+                // Horizontal clipping is a hard rule — a cell must never bleed
+                // into a neighboring column. Vertical scroll is a fallback for
+                // real edge cases (many players, expanded commander damage on
+                // a short window) so damage tracking degrades into a scrollbar
+                // rather than silently losing information.
+                overflowX: "hidden",
+                overflowY: "auto",
+                boxShadow: lethal ? "inset 0 0 0 2px rgba(222,115,134,0.5)" : "none",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexShrink: 0 }}>
+                <input
+                  value={p.name}
+                  onChange={(e) => renamePlayer(p.id, e.target.value)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    borderBottom: `1px solid rgba(185,191,199,0.25)`,
+                    color: C.parchment,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    padding: "2px 0",
+                    width: "60%",
+                  }}
+                />
+                <div style={{ display: "flex", gap: 2 }}>
+                  <button onClick={() => setRotated((r) => ({ ...r, [p.id]: !r[p.id] }))} style={lifeIconBtn} title="Flip for the seat across the table">
+                    <RotateCw size={13} color={C.parchmentDim} />
+                  </button>
+                  <button onClick={() => resetPlayer(p.id)} style={lifeIconBtn} title="Reset this player">
+                    <RotateCcw size={13} color={C.parchmentDim} />
+                  </button>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  position: "relative",
+                }}
+              >
+                {badge && (
+                  <div
+                    className={`life-badge${badge.fading ? " poofing" : ""}`}
+                    style={{
+                      position: "absolute",
+                      top: "8%",
+                      left: "50%",
+                      transform: "translateX(-50%)",
+                      pointerEvents: "none",
+                      zIndex: 2,
+                    }}
+                  >
+                    <span
+                      className="mono"
+                      style={{
+                        display: "inline-block",
+                        fontSize: "clamp(18px, 3vw, 26px)",
+                        fontWeight: 700,
+                        padding: "2px 12px",
+                        borderRadius: 20,
+                        background: badge.amount < 0 ? "rgba(222,115,134,0.16)" : "rgba(132,199,160,0.16)",
+                        color: badge.amount < 0 ? C.redBright : C.greenBright,
+                        border: `1px solid ${badge.amount < 0 ? "rgba(222,115,134,0.4)" : "rgba(132,199,160,0.4)"}`,
+                      }}
+                    >
+                      {badge.amount > 0 ? "+" : ""}
+                      {badge.amount}
+                    </span>
+                  </div>
+                )}
+
+                <div onClick={() => adjustLife(p.id, 1)} style={{ cursor: "pointer", textAlign: "center", userSelect: "none" }}>
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: numberFontSize,
+                      fontWeight: 700,
+                      color: p.life <= 0 ? C.redBright : p.life < start / 2 ? "#E8B34C" : C.goldBright,
+                      lineHeight: 1,
+                    }}
+                  >
+                    {p.life}
+                  </span>
+                </div>
+                <div
+                  onClick={() => adjustLife(p.id, -1)}
+                  style={{ cursor: "pointer", textAlign: "center", padding: "4px 0 0", fontSize: 10, color: C.parchmentDim, userSelect: "none" }}
+                >
+                  tap number for +1 · tap here for −1
+                </div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: format === "commander" ? 8 : 0, flexShrink: 0 }}>
+                <button onClick={() => adjustLife(p.id, -5)} style={lifeStepBtn}>−5</button>
+                <button onClick={() => adjustLife(p.id, -1)} style={lifeStepBtn}>−1</button>
+                <button onClick={() => adjustLife(p.id, 1)} style={lifeStepBtn}>+1</button>
+                <button onClick={() => adjustLife(p.id, 5)} style={lifeStepBtn}>+5</button>
+              </div>
+
+              {format === "commander" && (
+                <div style={{ borderTop: `1px solid rgba(185,191,199,0.15)`, paddingTop: 8, flexShrink: 0 }}>
+                  <button
+                    onClick={() => setExpanded((e) => (e === p.id ? null : p.id))}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      background: "none",
+                      border: "none",
+                      color: lethal ? C.redBright : C.parchmentDim,
+                      fontSize: 11.5,
+                      cursor: "pointer",
+                      padding: "2px 0",
+                      width: "100%",
+                    }}
+                  >
+                    <Swords size={12} />
+                    Commander damage{lethal ? " — LETHAL" : ""}
+                    <ChevronDown size={12} style={{ marginLeft: "auto", transform: expanded === p.id ? "rotate(180deg)" : "none" }} />
+                  </button>
+                  {expanded === p.id && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 6, maxHeight: cols === 3 ? 84 : 110, overflowY: "auto" }}>
+                      {players.filter((o) => o.id !== p.id).map((o) => {
+                        const dmg = p.cmdDmg[o.id] || 0;
+                        return (
+                          <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11.5, color: C.parchmentDim }}>
+                            <span style={{ maxWidth: "50%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              from {o.name}
+                            </span>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <button onClick={() => adjustCmdDmg(p.id, o.id, -1)} style={lifeTinyBtn}>−</button>
+                              <span className="mono" style={{ color: dmg >= 21 ? C.redBright : C.parchment, minWidth: 16, textAlign: "center" }}>
+                                {dmg}
+                              </span>
+                              <button onClick={() => adjustCmdDmg(p.id, o.id, 1)} style={lifeTinyBtn}>+</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function GlossaryView({ cards }) {
   const [oracle, setOracle] = useState(() => {
     try {
@@ -3835,7 +4548,7 @@ function GlossaryView({ cards }) {
   const unscanned = owned.filter((c) => c.scryfallId && !oracle[c.scryfallId]).length;
 
   return (
-    <main style={{ padding: "16px 30px 48px" }}>
+    <main style={{ padding: "16px clamp(14px, 4vw, 30px) 48px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 20 }}>
         <div className="serif" style={{ fontSize: 16, fontWeight: 600, color: C.goldBright }}>
           Keywords on your cards
@@ -5231,7 +5944,7 @@ function DecksView({ cards, decks, setDecks, valueOf, collections }) {
   // ---------- deck list ----------
   if (!deck) {
     return (
-      <main style={{ padding: "16px 30px 48px" }}>
+      <main style={{ padding: "16px clamp(14px, 4vw, 30px) 48px" }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 26 }}>
           {decks.map((d) => {
             const cmd = cardById[d.commanderId];
@@ -5535,7 +6248,7 @@ function DecksView({ cards, decks, setDecks, valueOf, collections }) {
   }
 
   return (
-    <main style={{ padding: "16px 30px 48px" }}>
+    <main style={{ padding: "16px clamp(14px, 4vw, 30px) 48px" }}>
       <button
         onClick={() => setOpenDeck(null)}
         className="mono"
@@ -6158,7 +6871,7 @@ function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
     `https://www.cardmarket.com/en/Magic/Products/Search?searchString=${encodeURIComponent(name)}`;
 
   return (
-    <main style={{ padding: "16px 30px 48px" }}>
+    <main style={{ padding: "16px clamp(14px, 4vw, 30px) 48px" }}>
       {setCodes.length === 0 && (
         <div
           style={{
@@ -6403,10 +7116,9 @@ function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
                             return (
                               <div
                                 key={key}
-                                className={flashKey === key ? "rowflash" : ""}
+                                className={`roster-row${flashKey === key ? " rowflash" : ""}`}
                                 style={{
                                   display: "grid",
-                                  gridTemplateColumns: "52px 1fr 90px 100px 110px",
                                   gap: 12,
                                   alignItems: "center",
                                   padding: "8px 14px",
@@ -6444,7 +7156,7 @@ function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
                                   />
                                   {e.name}
                                 </span>
-                                <span className="mono" style={{ fontSize: 11, color: C.parchmentDim, textAlign: "right" }}>
+                                <span className="mono roster-price" style={{ fontSize: 11, color: C.parchmentDim, textAlign: "right" }}>
                                   {e.usd !== null ? fmt(e.usd) : "—"}
                                 </span>
                                 <Stepper
@@ -6458,7 +7170,7 @@ function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
                                     setFlashKey(key);
                                   }}
                                 />
-                                <span style={{ textAlign: "right" }}>
+                                <span className="roster-link" style={{ textAlign: "right" }}>
                                   <a
                                     href={cardmarketUrl(e.name)}
                                     target="_blank"
@@ -7031,6 +7743,244 @@ function AccountPanel({ account }) {
   );
 }
 
+function SettingsSection({ label, tone, children }) {
+  return (
+    <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 22, paddingTop: 16 }}>
+      <div
+        style={{
+          fontSize: 12,
+          color: tone === "danger" ? C.redBright : C.parchmentDim,
+          letterSpacing: 1,
+          textTransform: "uppercase",
+          marginBottom: 6,
+        }}
+      >
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ProfilePinPanel() {
+  const [mode, setMode] = useState(null); // null | pin | delete
+  const [currentPin, setCurrentPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
+  const [deletePin, setDeletePin] = useState("");
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const input = {
+    width: "100%",
+    background: C.bgPanel2,
+    border: `1px solid ${C.border}`,
+    borderRadius: 6,
+    padding: "9px 11px",
+    color: C.parchment,
+    fontSize: 13,
+    marginBottom: 8,
+  };
+  const small = {
+    background: "none",
+    border: `1px solid ${C.border}`,
+    color: C.parchmentDim,
+    borderRadius: 6,
+    padding: "8px 13px",
+    fontSize: 12.5,
+    cursor: "pointer",
+  };
+
+  function switchUser() {
+    localStorage.removeItem("lf-profile");
+    window.location.reload();
+  }
+
+  async function changePin() {
+    if (newPin !== confirmPin) return setErr("The new PINs don't match.");
+    setErr("");
+    setMsg("");
+    setBusy(true);
+    const res = await fetch(`/api/store/${store.profile}/pin`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-pin": currentPin },
+      body: JSON.stringify({ newPin }),
+    });
+    const d = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (!res.ok) return setErr(d.error || "Couldn't change the PIN.");
+    // the device needs to remember the new PIN going forward
+    try {
+      localStorage.setItem("lf-profile", JSON.stringify({ name: store.profile, pin: newPin }));
+    } catch (e) {}
+    store.configure("server", store.profile, newPin);
+    setMsg(newPin ? "PIN changed." : "PIN removed — this vault now opens without one.");
+    setCurrentPin("");
+    setNewPin("");
+    setConfirmPin("");
+    setMode(null);
+  }
+
+  async function deleteProfile() {
+    setErr("");
+    setBusy(true);
+    const res = await fetch(`/api/store/${store.profile}`, {
+      method: "DELETE",
+      headers: { "x-pin": deletePin },
+    });
+    const d = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (!res.ok) return setErr(d.error || "Couldn't delete the profile.");
+    localStorage.removeItem("lf-profile");
+    window.location.reload();
+  }
+
+  return (
+    <SettingsSection label="Profile">
+      <p style={{ fontSize: 12.5, color: C.parchmentDim, marginTop: 0 }}>
+        Signed in as <b style={{ color: C.parchment }}>{store.profile}</b>.
+      </p>
+
+      {msg && <div style={{ fontSize: 12, color: C.greenBright, marginBottom: 8 }}>{msg}</div>}
+      {err && <div style={{ fontSize: 12, color: C.redBright, marginBottom: 8 }}>{err}</div>}
+
+      {mode === "pin" && (
+        <div style={{ marginBottom: 10 }}>
+          <input
+            style={input}
+            type="password"
+            inputMode="numeric"
+            placeholder="Current PIN (leave blank if none)"
+            value={currentPin}
+            onChange={(e) => setCurrentPin(e.target.value)}
+          />
+          <input
+            style={input}
+            type="password"
+            inputMode="numeric"
+            placeholder="New PIN (leave blank to remove it)"
+            value={newPin}
+            onChange={(e) => setNewPin(e.target.value)}
+          />
+          <input
+            style={input}
+            type="password"
+            inputMode="numeric"
+            placeholder="Confirm new PIN"
+            value={confirmPin}
+            onChange={(e) => setConfirmPin(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && changePin()}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={changePin}
+              disabled={busy}
+              style={{
+                background: STOCK_BG,
+                color: C.stockInk,
+                border: "none",
+                borderRadius: 6,
+                padding: "8px 14px",
+                fontWeight: 700,
+                fontSize: 12.5,
+                cursor: busy ? "default" : "pointer",
+                boxShadow: STOCK_SHADOW,
+              }}
+            >
+              Save
+            </button>
+            <button
+              style={small}
+              onClick={() => {
+                setMode(null);
+                setErr("");
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mode === "delete" && (
+        <div style={{ marginBottom: 10 }}>
+          <p style={{ fontSize: 12.5, color: C.redBright, lineHeight: 1.55, marginTop: 0 }}>
+            This permanently deletes the <b>{store.profile}</b> profile and everything in its
+            vault from the server. Export a CSV first if you want a copy — this can't be undone.
+          </p>
+          <input
+            style={input}
+            type="password"
+            inputMode="numeric"
+            placeholder="Confirm with this profile's PIN (leave blank if none)"
+            value={deletePin}
+            onChange={(e) => setDeletePin(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && deleteProfile()}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={deleteProfile}
+              disabled={busy}
+              style={{
+                background: "transparent",
+                border: `1px solid ${C.redBright}`,
+                color: C.redBright,
+                borderRadius: 6,
+                padding: "8px 14px",
+                fontWeight: 700,
+                fontSize: 12.5,
+                cursor: busy ? "default" : "pointer",
+              }}
+            >
+              Delete this profile
+            </button>
+            <button
+              style={small}
+              onClick={() => {
+                setMode(null);
+                setErr("");
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mode === null && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button style={small} onClick={switchUser}>
+            <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <Users size={14} /> Switch user
+            </span>
+          </button>
+          <button
+            style={small}
+            onClick={() => {
+              setMode("pin");
+              setErr("");
+              setMsg("");
+            }}
+          >
+            Change PIN
+          </button>
+          <button
+            style={{ ...small, borderColor: "rgba(222,115,134,0.4)", color: C.redBright }}
+            onClick={() => {
+              setMode("delete");
+              setErr("");
+              setMsg("");
+            }}
+          >
+            Delete this profile
+          </button>
+        </div>
+      )}
+    </SettingsSection>
+  );
+}
+
 function SettingsModal({
   serverMode,
   authMode,
@@ -7048,6 +7998,17 @@ function SettingsModal({
   const [wipeConfirm, setWipeConfirm] = useState("");
   return (
     <ModalShell title="Settings" onClose={onClose} width={420}>
+      <div
+        style={{
+          fontSize: 12,
+          color: C.parchmentDim,
+          letterSpacing: 1,
+          textTransform: "uppercase",
+          marginBottom: 6,
+        }}
+      >
+        Currency &amp; display
+      </div>
       <p style={{ fontSize: 12.5, color: C.parchmentDim, marginTop: 0 }}>
         Card prices are tracked in US dollars. Pick how you'd like totals displayed and
         set the rates you want to convert at.
@@ -7103,39 +8064,37 @@ function SettingsModal({
 
       {serverMode && authMode === "accounts" && <AccountPanel account={account} />}
 
-      {serverMode && authMode !== "accounts" && (
-        <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 22, paddingTop: 16 }}>
-          <div style={{ fontSize: 12, color: C.parchmentDim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>
-            Profile
-          </div>
-          <p style={{ fontSize: 12.5, color: C.parchmentDim, marginTop: 0 }}>
-            Signed in as <b style={{ color: C.parchment }}>{store.profile}</b>. Switching lets
-            someone else open their vault on this device.
-          </p>
-          <button
-            onClick={() => {
-              localStorage.removeItem("lf-profile");
-              window.location.reload();
-            }}
-            style={{
-              background: "none",
-              border: `1px solid ${C.border}`,
-              color: C.parchmentDim,
-              borderRadius: 6,
-              padding: "9px 14px",
-              fontSize: 12.5,
-              cursor: "pointer",
-            }}
-          >
-            Switch profile
-          </button>
-        </div>
-      )}
+      {serverMode && authMode !== "accounts" && <ProfilePinPanel />}
 
-      <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 22, paddingTop: 16 }}>
-        <div style={{ fontSize: 12, color: C.redBright, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>
-          Delete everything
-        </div>
+      <SettingsSection label="Support HoardKeeper">
+        <p style={{ fontSize: 12.5, color: C.parchmentDim, marginTop: 0, lineHeight: 1.55 }}>
+          HoardKeeper is free and always will be. If it's saved you some spreadsheet
+          headaches, a coffee is appreciated but never expected.
+        </p>
+        <a
+          href="https://ko-fi.com/Arinlir"
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            background: STOCK_BG,
+            color: C.stockInk,
+            border: "none",
+            borderRadius: 6,
+            padding: "9px 16px",
+            fontWeight: 700,
+            fontSize: 12.5,
+            textDecoration: "none",
+            boxShadow: STOCK_SHADOW,
+          }}
+        >
+          <Heart size={14} /> Buy me a coffee on Ko-fi
+        </a>
+      </SettingsSection>
+
+      <SettingsSection label="Delete everything" tone="danger">
         <p style={{ fontSize: 12.5, color: C.parchmentDim, marginTop: 0 }}>
           Removes all {cardCount} cards from the vault. Collections and their purchase prices
           stay. This can't be undone — export a CSV first if you want a backup.
@@ -7165,7 +8124,7 @@ function SettingsModal({
             Delete all
           </button>
         </div>
-      </div>
+      </SettingsSection>
     </ModalShell>
   );
 }
@@ -7222,7 +8181,7 @@ function ModalShell({ title, onClose, children, width = 480 }) {
         alignItems: "center",
         justifyContent: "center",
         zIndex: 50,
-        padding: 20,
+        padding: "clamp(10px, 4vw, 20px)",
       }}
       onClick={onClose}
     >

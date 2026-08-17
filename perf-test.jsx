@@ -122,3 +122,4 @@ check("memoized card tile's DOM node is stable across an unrelated re-render", a
 
 console.log(ok ? "\nALL PASS" : "\nFAIL");
 if (!ok) process.exit(1);
+process.exit(0);

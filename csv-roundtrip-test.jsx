@@ -44,3 +44,4 @@ const ids = parsed.data.map((r) => val(r, "scryfallId"));
 console.log("two Mountains distinguishable:", ids[0] !== ids[1]);
 if (!allIdentified || ids[0] === ids[1]) process.exit(1);
 console.log("ALL PASS");
+process.exit(0);

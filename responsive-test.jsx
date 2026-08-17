@@ -43,4 +43,4 @@ console.log((h1Clamped ? "PASS" : "FAIL"), "header title uses clamp()");
 if (!h1Clamped) allPass = false;
 
 console.log(allPass ? "\nALL PASS" : "\nFAIL");
-if (!allPass) process.exit(1);
+process.exit(allPass ? 0 : 1);

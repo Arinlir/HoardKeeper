@@ -87,3 +87,4 @@ check("Switch user still clears the saved login", localStorage.getItem("lf-profi
 
 console.log(ok ? "\nALL PASS" : "\nFAIL");
 if (!ok) process.exit(1);
+process.exit(0);

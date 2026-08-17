@@ -59,3 +59,4 @@ const ok =
   parsedJson.meta.name === "Galadriel deck";
 console.log(ok ? "\nALL PASS" : "\nFAIL");
 if (!ok) process.exit(1);
+process.exit(0);

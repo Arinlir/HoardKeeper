@@ -70,3 +70,4 @@ check("back on the normal collection page", document.body.textContent.includes("
 
 console.log(ok ? "\nALL PASS" : "\nFAIL");
 if (!ok) process.exit(1);
+process.exit(0);

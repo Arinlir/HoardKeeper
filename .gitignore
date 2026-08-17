@@ -9,4 +9,3 @@ npm-debug.log*
 # profile vaults (PIN hashes + collections) — never commit
 data/
 *.zip
-.test.mjs

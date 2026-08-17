@@ -47,3 +47,4 @@ check("Ko-fi link doesn't leak a referrer/open a tab-nabbing hole", (kofi?.getAt
 
 console.log(ok ? "\nALL PASS" : "\nFAIL");
 if (!ok) process.exit(1);
+process.exit(0);

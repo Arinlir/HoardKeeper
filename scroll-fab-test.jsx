@@ -61,4 +61,4 @@ check("fab entrance animation shipped", /\.fab-add\s*\{[^}]*animation:\s*fab-in/
 check("reduced-motion disables both new animations", /prefers-reduced-motion[\s\S]*\.fab-add,\s*\.card-tile\.just-added \.sleeve\s*\{\s*animation:\s*none/.test(css));
 
 console.log(ok ? "\nALL PASS" : "\nFAIL");
-if (!ok) process.exit(1);
+process.exit(ok ? 0 : 1);

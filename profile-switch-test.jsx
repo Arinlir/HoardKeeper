@@ -48,3 +48,4 @@ if (chip) {
 
 console.log(ok ? "\nALL PASS" : "\nFAIL");
 if (!ok) process.exit(1);
+process.exit(0);

@@ -63,3 +63,4 @@ const other = errors.filter((e) => !/not wrapped in act/i.test(e));
 console.log("7. other console errors:", other.length === 0 ? "none" : other[0].slice(0, 160));
 if (hookErrors.length || !text.includes("ALL DECKS")) process.exit(1);
 console.log("ALL PASS");
+process.exit(0);

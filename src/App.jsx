@@ -3,7 +3,7 @@ import {
   Plus, Upload, RefreshCw, Search, X, TrendingUp, TrendingDown,
   Sparkles, Trash2, Pencil, Download, Layers, ChevronDown, Check,
   AlertCircle, Loader2, LibraryBig, BarChart3, Coins, CheckSquare, Square, MapPin, Tag,
-  RotateCcw, RotateCw, Swords, Users, Settings, Heart
+  RotateCcw, RotateCw, Swords, Users, Settings, Heart, Palette, Copy
 } from "lucide-react";
 import Papa from "papaparse";
 import {
@@ -52,6 +52,8 @@ const MANA = {
 
 const UNCATEGORIZED = "uncategorized";
 const SOLD = "__sold__";
+const RARITY_GROUP_ORDER = ["mythic", "rare", "uncommon", "common"];
+const RARITY_GROUP_LABELS = ["Mythic", "Rare", "Uncommon", "Common"];
 
 const TYPE_FILTERS = [
   "Creature",
@@ -208,6 +210,7 @@ function normalizeCard(data) {
     colors: data.color_identity || [],
     rarity: data.rarity || "",
     scryfallId: data.id,
+    artist: data.artist || face?.artist || null,
   };
 }
 
@@ -559,21 +562,55 @@ export default function App() {
     })();
   }, [boot]);
 
-  // save
+  // save — debounced and serialized, so rapid edits (typing a rename,
+  // several quick card adds) collapse into one write of the latest state
+  // instead of firing an overlapping PUT per keystroke. Without this, two
+  // in-flight requests over a real network (server/PIN mode, accounts mode)
+  // can complete OUT OF ORDER, letting an older payload overwrite a newer
+  // one on the server — which looks exactly like edits "reverting" after a
+  // reload. saveSeq guards against a slow, now-stale request's completion
+  // clobbering the saveError indicator for a save that already succeeded.
+  const saveInFlight = useRef(false);
+  const savePending = useRef(false);
+  const saveSeq = useRef(0);
+  const saveTimer = useRef(null);
+  // Always holds the CURRENT state, updated every render. runSave reads from
+  // this rather than closing over collections/cards/etc directly, so a retry
+  // triggered from inside runSave's own finally block (see below) sends the
+  // freshest data rather than replaying whatever was current when that
+  // particular call started.
+  const latestSnapshot = useRef(null);
+  latestSnapshot.current = { collections, cards, currency, czkRate, eurRate, history, decks };
+
+  const runSave = useCallback(async () => {
+    if (saveInFlight.current) {
+      // a save is already on the wire; ask it to run again with whatever's
+      // freshest once it finishes, instead of starting an overlapping one
+      savePending.current = true;
+      return;
+    }
+    saveInFlight.current = true;
+    const mySeq = ++saveSeq.current;
+    try {
+      const result = await store.set("ledger-foil-data", JSON.stringify(latestSnapshot.current));
+      if (mySeq === saveSeq.current) setSaveError(!result);
+    } catch (e) {
+      if (mySeq === saveSeq.current) setSaveError(true);
+    } finally {
+      saveInFlight.current = false;
+      if (savePending.current) {
+        savePending.current = false;
+        runSave();
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!loaded) return;
-    (async () => {
-      try {
-        const result = await store.set(
-          "ledger-foil-data",
-          JSON.stringify({ collections, cards, currency, czkRate, eurRate, history, decks })
-        );
-        setSaveError(!result);
-      } catch (e) {
-        setSaveError(true);
-      }
-    })();
-  }, [collections, cards, loaded, currency, czkRate, eurRate, history, decks]);
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(runSave, 500);
+    return () => clearTimeout(saveTimer.current);
+  }, [collections, cards, loaded, currency, czkRate, eurRate, history, decks, runSave]);
 
   // Import adds this file's spend to an existing collection's invested total.
   function addToCollectionTotal(id, amount) {
@@ -624,6 +661,19 @@ export default function App() {
     collections.forEach((c) => (m[c.id] = c.name));
     return m;
   }, [collections]);
+
+  // Counts how many un-sold rows share a card name, so the grid can show a
+  // "which printing/finish is this" badge specifically when it's actually
+  // needed to tell two "Sol Ring" tiles apart — and stay quiet otherwise.
+  const nameCounts = useMemo(() => {
+    const m = {};
+    cards.forEach((c) => {
+      if (c.sold) return;
+      const key = c.name.toLowerCase();
+      m[key] = (m[key] || 0) + 1;
+    });
+    return m;
+  }, [cards]);
 
   function collectionName(id) {
     if (id === UNCATEGORIZED || !id) return "Uncategorized";
@@ -710,7 +760,8 @@ export default function App() {
       list = list.filter((c) => c.name.toLowerCase().includes(q));
     }
     list = [...list];
-    if (sortBy === "name") list.sort((a, b) => a.name.localeCompare(b.name));
+    if (sortBy === "name" || sortBy === "alpha-grouped")
+      list.sort((a, b) => a.name.localeCompare(b.name));
     else if (sortBy === "value-desc")
       list.sort(
         (a, b) =>
@@ -727,11 +778,84 @@ export default function App() {
         const db = currentUnitValue(b) * b.quantity - allocatedCost(b);
         return db - da;
       });
+    else if (sortBy === "rarity-grouped")
+      list.sort((a, b) => {
+        const ra = RARITY_GROUP_ORDER.indexOf((a.rarity || "").toLowerCase());
+        const rb = RARITY_GROUP_ORDER.indexOf((b.rarity || "").toLowerCase());
+        const oa = ra === -1 ? RARITY_GROUP_ORDER.length : ra;
+        const ob = rb === -1 ? RARITY_GROUP_ORDER.length : rb;
+        return oa - ob || a.name.localeCompare(b.name);
+      });
     else list.sort((a, b) => (b.added || 0) - (a.added || 0));
     return list;
   }, [cards, activeFilter, search, sortBy, typeFilter, colorFilter, collections]);
 
+  // Section headers for the two grouped views. Built from `filtered`, which
+  // is already sorted correctly for grouping (alphabetical or rarity order)
+  // above — this just finds where one group ends and the next begins.
+  const groupedSections = useMemo(() => {
+    if (sortBy === "alpha-grouped") {
+      const groups = [];
+      let current = null;
+      filtered.forEach((c) => {
+        const first = c.name.trim()[0]?.toUpperCase() || "#";
+        const key = /[A-Z]/.test(first) ? first : "#";
+        if (!current || current.label !== key) {
+          current = { label: key, cards: [] };
+          groups.push(current);
+        }
+        current.cards.push(c);
+      });
+      return groups;
+    }
+    if (sortBy === "rarity-grouped") {
+      const groups = [];
+      let current = null;
+      filtered.forEach((c) => {
+        const idx = RARITY_GROUP_ORDER.indexOf((c.rarity || "").toLowerCase());
+        const key = idx === -1 ? "Other" : RARITY_GROUP_LABELS[idx];
+        if (!current || current.label !== key) {
+          current = { label: key, cards: [] };
+          groups.push(current);
+        }
+        current.cards.push(c);
+      });
+      return groups;
+    }
+    return null;
+  }, [filtered, sortBy]);
+
+  // A card counts as "the same copy" you already own when it's the same
+  // printing (matched by Scryfall ID, or by set + collector number when
+  // that's missing) AND the same finish — a foil and a nonfoil of the same
+  // card are genuinely different objects worth their own rows, but two
+  // nonfoil adds of the same printing are just... more of the one you have.
+  function findMatchingCard(cardData) {
+    const finish = cardData.finish || (cardData.foil ? "foil" : "nonfoil");
+    return cards.find((c) => {
+      if (c.sold) return false;
+      if (finishOf(c) !== finish) return false;
+      if (cardData.scryfallId && c.scryfallId) return c.scryfallId === cardData.scryfallId;
+      return (
+        !!cardData.set &&
+        !!cardData.collectorNumber &&
+        c.set === cardData.set &&
+        c.collectorNumber === cardData.collectorNumber
+      );
+    });
+  }
+
+  // Returns { id, merged } — merged is true when this bumped an existing
+  // row's quantity rather than creating a new one, so callers (the add
+  // dialog's "added this session" list, the scroll-to-card highlight) can
+  // point at the right card either way.
   function addCard(cardData) {
+    const existing = findMatchingCard(cardData);
+    if (existing) {
+      const addQty = cardData.quantity || 1;
+      updateCard(existing.id, { quantity: (existing.quantity || 1) + addQty });
+      return { id: existing.id, merged: true };
+    }
     const id = uid();
     setCards((prev) => [
       ...prev,
@@ -741,6 +865,7 @@ export default function App() {
         name: cardData.name,
         set: cardData.set || "",
         setName: cardData.setName || "",
+        collectorNumber: cardData.collectorNumber || "",
         imageUrl: cardData.imageUrl || null,
         imageUrlLarge: cardData.imageUrlLarge || null,
         scryfallUri: cardData.scryfallUri || null,
@@ -762,7 +887,7 @@ export default function App() {
         scryfallId: cardData.scryfallId || null,
       },
     ]);
-    return id;
+    return { id, merged: false };
   }
 
   function updateCard(id, patch) {
@@ -943,10 +1068,14 @@ export default function App() {
 
   // Roster steppers: + creates or increments the matching card; − decrements
   // and removes at zero. Matching is by Scryfall ID, then set+collector number.
+  // The roster's +/- always adds nonfoil copies, so a match must also be
+  // nonfoil — otherwise a foil-only row could silently absorb what was
+  // meant to be a separate nonfoil pull.
   function findOwned(entry) {
     return cards.find(
       (c) =>
         !c.sold &&
+        finishOf(c) === "nonfoil" &&
         ((c.scryfallId && c.scryfallId === entry.scryfallId) ||
           (c.set === entry.set && c.collectorNumber === entry.collectorNumber))
     );
@@ -1473,29 +1602,88 @@ export default function App() {
           />
         )}
 
-        <div
-          className="card-grid"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
-            gap: 20,
-            marginTop: 20,
-            paddingBottom: selectMode ? 70 : 0,
-          }}
-        >
-          {filtered.map((card) => (
-            <CardTile
-              key={card.id}
-              card={card}
-              collectionName={collectionName(card.collectionId)}
-              cost={allocatedCost(card)}
-              value={currentUnitValue(card) * card.quantity}
-              selectMode={selectMode}
-              selected={selectedSet.has(card.id)}
-              onClick={handleCardClick}
-            />
-          ))}
-        </div>
+        {groupedSections ? (
+          <div style={{ marginTop: 20, paddingBottom: selectMode ? 70 : 0 }}>
+            {groupedSections.map((section) => (
+              <div key={section.label} style={{ marginBottom: 28 }}>
+                <div
+                  className="display"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    fontSize: 15,
+                    fontWeight: 700,
+                    color: C.goldBright,
+                    marginBottom: 14,
+                  }}
+                >
+                  {section.label}
+                  <span
+                    className="mono"
+                    style={{
+                      flex: "0 0 auto",
+                      fontSize: 10.5,
+                      fontWeight: 500,
+                      color: C.parchmentDim,
+                      letterSpacing: 0.5,
+                    }}
+                  >
+                    {section.cards.length} card{section.cards.length === 1 ? "" : "s"}
+                  </span>
+                  <span style={{ flex: 1, height: 1, background: "rgba(185,191,199,0.15)" }} />
+                </div>
+                <div
+                  className="card-grid"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
+                    gap: 20,
+                  }}
+                >
+                  {section.cards.map((card) => (
+                    <CardTile
+                      key={card.id}
+                      card={card}
+                      collectionName={collectionName(card.collectionId)}
+                      cost={allocatedCost(card)}
+                      value={currentUnitValue(card) * card.quantity}
+                      selectMode={selectMode}
+                      selected={selectedSet.has(card.id)}
+                      onClick={handleCardClick}
+                      hasSiblings={(nameCounts[card.name.toLowerCase()] || 0) > 1}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div
+            className="card-grid"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
+              gap: 20,
+              marginTop: 20,
+              paddingBottom: selectMode ? 70 : 0,
+            }}
+          >
+            {filtered.map((card) => (
+              <CardTile
+                key={card.id}
+                card={card}
+                collectionName={collectionName(card.collectionId)}
+                cost={allocatedCost(card)}
+                value={currentUnitValue(card) * card.quantity}
+                selectMode={selectMode}
+                selected={selectedSet.has(card.id)}
+                onClick={handleCardClick}
+                hasSiblings={(nameCounts[card.name.toLowerCase()] || 0) > 1}
+              />
+            ))}
+          </div>
+        )}
       </main>
       )}
       </div>
@@ -1581,15 +1769,25 @@ export default function App() {
 
       {showAddCard && (
         <AddCardModal
+          // showAddCard is either `true` (plain add) or the card being
+          // duplicated (from a card's own "Duplicate" button) — passing that
+          // card straight through skips search entirely and jumps to the
+          // finish/quantity/collection step, since we already know exactly
+          // which printing this is.
+          prefill={typeof showAddCard === "object" ? showAddCard : null}
           defaultCollectionId={
-            activeFilter !== "all" && activeFilter !== SOLD ? activeFilter : UNCATEGORIZED
+            typeof showAddCard === "object"
+              ? showAddCard.collectionId || UNCATEGORIZED
+              : activeFilter !== "all" && activeFilter !== SOLD
+              ? activeFilter
+              : UNCATEGORIZED
           }
           collections={collections}
           cards={cards}
           allocationPreview={allocationPreview}
           onClose={() => setShowAddCard(false)}
           onAdd={(data, keepOpen) => {
-            const id = addCard(data);
+            const result = addCard(data);
             if (!keepOpen) {
               setShowAddCard(false);
               // Clear filters so the card that was just added can't be hidden
@@ -1598,8 +1796,9 @@ export default function App() {
               setTypeFilter("all");
               setColorFilter("all");
               setSearch("");
-              setScrollToCardId(id);
+              setScrollToCardId(result.id);
             }
+            return result;
           }}
           onCreateCollection={addCollection}
         />
@@ -1679,6 +1878,10 @@ export default function App() {
           onUnsell={() =>
             updateCard(detailCard.id, { sold: false, soldPrice: null, soldDate: null })
           }
+          onDuplicate={(c) => {
+            setDetailCard(null);
+            setShowAddCard(c);
+          }}
         />
       )}
     </div>
@@ -1927,7 +2130,14 @@ function FilterBar({ collections, cards, active, setActive, search, setSearch, s
         borderBottom: `1px solid ${C.border}`,
       }}
     >
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      {/* Collection chips always own their full row. Without this, once
+          the chip list wraps onto a second line, flexbox can still judge
+          there's "just enough" room to squeeze the color pips onto that
+          same line — which is exactly what crowded the collection names
+          against the color dots. Giving this group flex-basis:100% makes
+          that impossible regardless of how many collections exist or how
+          long their names are. */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", flexBasis: "100%" }}>
         <Chip label={`All (${heldCount})`} active={active === "all"} onClick={() => setActive("all")} />
         {collections.map((col) => (
           <Chip
@@ -1952,8 +2162,6 @@ function FilterBar({ collections, cards, active, setActive, search, setSearch, s
           />
         )}
       </div>
-
-      <div style={{ flex: 1 }} />
 
       {/* color pips — actual mana colors as the buttons */}
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -2050,6 +2258,8 @@ function FilterBar({ collections, cards, active, setActive, search, setSearch, s
         <option value="value-desc">Value (high to low)</option>
         <option value="value-asc">Value (low to high)</option>
         <option value="gain">Biggest gainers</option>
+        <option value="alpha-grouped">A–Z, grouped</option>
+        <option value="rarity-grouped">Rarity, grouped</option>
       </select>
 
       <button
@@ -2628,7 +2838,7 @@ function CardFace({ card }) {
   );
 }
 
-const CardTile = React.memo(function CardTile({ card, collectionName, cost, value, onClick, selectMode, selected }) {
+const CardTile = React.memo(function CardTile({ card, collectionName, cost, value, onClick, selectMode, selected, hasSiblings }) {
   const delta = value - cost;
   const up = delta >= 0;
   return (
@@ -2733,6 +2943,59 @@ const CardTile = React.memo(function CardTile({ card, collectionName, cost, valu
             }}
           >
             x{card.quantity}
+          </div>
+        )}
+
+        {/* Only shown when another row shares this card's name — this is
+            specifically "which copy is this one" disambiguation (different
+            printing/art, or a different finish), not clutter on every tile. */}
+        {hasSiblings && (
+          <div
+            className="mono"
+            style={{
+              position: "absolute",
+              bottom: 6,
+              left: 6,
+              zIndex: 2,
+              display: "flex",
+              gap: 4,
+              flexWrap: "wrap",
+              maxWidth: "calc(100% - 12px)",
+            }}
+          >
+            {card.set && (
+              <span
+                style={{
+                  background: "rgba(10,11,13,0.82)",
+                  border: `1px solid rgba(232,236,241,0.25)`,
+                  borderRadius: 3,
+                  padding: "1px 6px",
+                  fontSize: 9,
+                  letterSpacing: 0.4,
+                  color: C.parchment,
+                  textTransform: "uppercase",
+                }}
+              >
+                {(card.set || "").toUpperCase()}
+                {card.collectorNumber ? ` #${card.collectorNumber}` : ""}
+              </span>
+            )}
+            {finishOf(card) !== "nonfoil" && (
+              <span
+                style={{
+                  background: "rgba(10,11,13,0.82)",
+                  border: `1px solid rgba(201,162,39,0.5)`,
+                  borderRadius: 3,
+                  padding: "1px 6px",
+                  fontSize: 9,
+                  letterSpacing: 0.4,
+                  color: C.goldBright,
+                  textTransform: "uppercase",
+                }}
+              >
+                {finishOf(card)}
+              </span>
+            )}
           </div>
         )}
 
@@ -4834,7 +5097,22 @@ function deckToText(deck, cardById, commander, tokens, tokenQty) {
   return lines.join("\n");
 }
 
-// Full fidelity: keeps the printing of every card, so a re-import is exact.
+// Basics have no owned printing attached (a quick-add "Forest" isn't tied to
+// any specific card in your binder) so there's no real set to record — but
+// the type line is always knowable from the name, and leaving it out is
+// exactly the gap that made lands unrecognizable on their own in an export.
+const BASIC_TYPE_LINES = {
+  Plains: "Basic Land — Plains",
+  Island: "Basic Land — Island",
+  Swamp: "Basic Land — Swamp",
+  Mountain: "Basic Land — Mountain",
+  Forest: "Basic Land — Forest",
+  Wastes: "Basic Land",
+};
+
+// Full fidelity: keeps the printing AND type of every card, so a re-import
+// is exact and the file is self-documenting without cross-referencing
+// Scryfall for what each line actually is.
 function deckToJson(deck, cardById, commander) {
   return JSON.stringify(
     {
@@ -4844,7 +5122,12 @@ function deckToJson(deck, cardById, commander) {
       colors: deck.colors || null,
       exported: new Date().toISOString(),
       commander: commander
-        ? { name: commander.name, set: commander.set, collectorNumber: commander.collectorNumber }
+        ? {
+            name: commander.name,
+            set: commander.set,
+            collectorNumber: commander.collectorNumber,
+            typeLine: commander.typeLine || null,
+          }
         : null,
       cards: deck.entries
         .map((e) => {
@@ -4855,12 +5138,21 @@ function deckToJson(deck, cardById, commander) {
             name: c.name,
             set: c.set,
             collectorNumber: c.collectorNumber,
+            typeLine: c.typeLine || null,
             finish: finishOf(c),
             role: e.role,
           };
         })
         .filter(Boolean),
+      // kept as a plain {name: qty} map for backward compatibility with
+      // earlier exports, PLUS a richer parallel list carrying the type each
+      // basic actually is -- jsonToParsed reads either shape.
       basics: deck.basics || {},
+      basicsDetail: Object.entries(deck.basics || {}).map(([name, qty]) => ({
+        name,
+        qty,
+        typeLine: BASIC_TYPE_LINES[name] || "Basic Land",
+      })),
       tokenCounts: deck.tokenCounts || {},
       extraTokens: deck.extraTokens || [],
     },
@@ -6764,6 +7056,36 @@ async function fetchSetRoster(code) {
   return all;
 }
 
+// Art Series sets ("Tales of Middle-earth Art Series", etc.) are real,
+// independent Scryfall sets — full art, no rules text, layout "art_series" —
+// linked back to their parent expansion via parent_set_code. Fetched once
+// and cached for a month since this list barely changes.
+async function fetchArtSeriesCompanions() {
+  const cacheKey = "lf-art-companions";
+  try {
+    const cached = JSON.parse(localStorage.getItem(cacheKey));
+    if (cached && Date.now() - cached.t < 30 * 864e5) return cached.d;
+  } catch (e) {}
+  const map = {};
+  let url = `${SCRYFALL}/sets`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("couldn't load the set list");
+  const data = await res.json();
+  (data.data || []).forEach((set) => {
+    if (
+      set.set_type === "memorabilia" &&
+      set.parent_set_code &&
+      /art series/i.test(set.name)
+    ) {
+      map[set.parent_set_code] = { code: set.code, name: set.name, count: set.card_count };
+    }
+  });
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), d: map }));
+  } catch (e) {}
+  return map;
+}
+
 const RARITY_ORDER = ["common", "uncommon", "rare", "mythic"];
 const RARITY_FILL = {
   common: C.rarityCommon,
@@ -6773,6 +7095,7 @@ const RARITY_FILL = {
 };
 
 function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
+  const [subView, setSubView] = useState("owned"); // "owned" | "art"
   const owned = useMemo(() => cards.filter((c) => !c.sold && c.set), [cards]);
 
   // group owned cards by set code
@@ -6872,6 +7195,52 @@ function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
 
   return (
     <main style={{ padding: "16px clamp(14px, 4vw, 30px) 48px" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        <button
+          onClick={() => setSubView("owned")}
+          className="mono"
+          style={{
+            background: subView === "owned" ? STOCK_BG : "transparent",
+            color: subView === "owned" ? C.stockInk : C.parchmentDim,
+            border: `1px solid ${subView === "owned" ? C.stock : "rgba(185,191,199,0.26)"}`,
+            borderRadius: 5,
+            padding: "7px 15px",
+            fontSize: 11.5,
+            letterSpacing: 0.6,
+            textTransform: "uppercase",
+            fontWeight: 600,
+            cursor: "pointer",
+            boxShadow: subView === "owned" ? STOCK_SHADOW : "none",
+          }}
+        >
+          Owned Sets
+        </button>
+        <button
+          onClick={() => setSubView("art")}
+          className="mono"
+          style={{
+            background: subView === "art" ? STOCK_BG : "transparent",
+            color: subView === "art" ? C.stockInk : C.parchmentDim,
+            border: `1px solid ${subView === "art" ? C.stock : "rgba(185,191,199,0.26)"}`,
+            borderRadius: 5,
+            padding: "7px 15px",
+            fontSize: 11.5,
+            letterSpacing: 0.6,
+            textTransform: "uppercase",
+            fontWeight: 600,
+            cursor: "pointer",
+            boxShadow: subView === "art" ? STOCK_SHADOW : "none",
+          }}
+        >
+          <Palette size={12} style={{ marginRight: 5, verticalAlign: -2 }} />
+          Art Cards
+        </button>
+      </div>
+
+      {subView === "art" ? (
+        <ArtCardsView cards={cards} onAddCopy={onAddCopy} onRemoveCopy={onRemoveCopy} />
+      ) : (
+      <>
       {setCodes.length === 0 && (
         <div
           style={{
@@ -7219,7 +7588,430 @@ function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
           />
         </div>
       )}
+      </>
+      )}
     </main>
+  );
+}
+
+// Art Series cards ("Tales of Middle-earth Art Series", etc.) are real,
+// ownable Scryfall entries — full art, no rules text — and are discovered
+// via each owned set's official parent_set_code link, not a guessed prefix,
+// so this works for any set that has a companion art series regardless of
+// naming convention. Reuses the same roster/stepper machinery as the normal
+// Sets tab, since adding an art card to your collection works identically
+// to adding any other card.
+function cleanArtCardName(name) {
+  // Art series cards are technically double-faced (front + back, both the
+  // same card), so Scryfall's `name` field is literally "X // X" — collapse
+  // that back to plain "X" for display.
+  const parts = (name || "").split(" // ");
+  if (parts.length === 2 && parts[0] === parts[1]) return parts[0];
+  return name;
+}
+
+function ArtCardsView({ cards, onAddCopy, onRemoveCopy }) {
+  const owned = useMemo(() => cards.filter((c) => !c.sold && c.set), [cards]);
+  const ownedSetCodes = useMemo(
+    () => [...new Set(owned.map((c) => c.set.toLowerCase()))],
+    [owned]
+  );
+
+  const [companions, setCompanions] = useState(null); // null = loading
+  const [companionError, setCompanionError] = useState("");
+  const [expanded, setExpanded] = useState(null);
+  const [roster, setRoster] = useState(null);
+  const [rosterLoading, setRosterLoading] = useState(false);
+  const [rosterError, setRosterError] = useState("");
+  const [rosterFilter, setRosterFilter] = useState("all");
+  const [rosterSearch, setRosterSearch] = useState("");
+  const [targetCollection, setTargetCollection] = useState(UNCATEGORIZED);
+  const [flashKey, setFlashKey] = useState(null);
+  const [preview, setPreview] = useState(null);
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const map = await fetchArtSeriesCompanions();
+        if (live) setCompanions(map);
+      } catch (e) {
+        if (live) setCompanionError("Couldn't reach Scryfall to look up art series companions.");
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // Which of your owned sets actually have a companion art series, and how
+  // many art cards from that series you already own.
+  const artSets = useMemo(() => {
+    if (!companions) return [];
+    return ownedSetCodes
+      .filter((code) => companions[code])
+      .map((code) => {
+        const comp = companions[code];
+        const distinct = new Set(
+          cards.filter((c) => !c.sold && (c.set || "").toLowerCase() === comp.code.toLowerCase())
+            .map((c) => c.collectorNumber || c.name)
+        ).size;
+        return { parentCode: code, ...comp, owned: distinct };
+      })
+      .sort((a, b) => b.owned - a.owned || a.name.localeCompare(b.name));
+  }, [companions, ownedSetCodes, cards]);
+
+  function ownedCount(entry) {
+    const match = owned.find(
+      (c) =>
+        (c.scryfallId && c.scryfallId === entry.scryfallId) ||
+        (c.set === entry.set && c.collectorNumber === entry.collectorNumber)
+    );
+    return match ? match.quantity || 1 : 0;
+  }
+
+  async function openRoster(code) {
+    if (expanded === code) {
+      setExpanded(null);
+      setRoster(null);
+      return;
+    }
+    setExpanded(code);
+    setRoster(null);
+    setRosterError("");
+    setRosterFilter("all");
+    setRosterSearch("");
+    setRosterLoading(true);
+    try {
+      const r = await fetchSetRoster(code);
+      setRoster(r);
+    } catch (e) {
+      setRosterError("Couldn't load this art series from Scryfall. Try again in a moment.");
+    }
+    setRosterLoading(false);
+  }
+
+  if (companionError) {
+    return (
+      <div style={{ color: C.redBright, fontSize: 13, padding: "6px 4px" }}>{companionError}</div>
+    );
+  }
+
+  if (companions === null) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.parchmentDim, fontSize: 13.5 }}>
+        <Loader2 size={15} style={{ animation: "spin 1s linear infinite" }} />
+        Checking which of your sets have a companion art series…
+      </div>
+    );
+  }
+
+  if (artSets.length === 0) {
+    return (
+      <div
+        style={{
+          border: `1px dashed ${C.border}`,
+          borderRadius: 10,
+          padding: 36,
+          textAlign: "center",
+          color: C.parchmentDim,
+          fontSize: 13.5,
+          lineHeight: 1.6,
+        }}
+      >
+        <Palette size={22} color={C.gold} style={{ marginBottom: 10 }} />
+        <div>None of your sets have a companion art series yet.</div>
+        <div style={{ fontSize: 12, marginTop: 4, opacity: 0.8 }}>
+          Art series cards ship alongside specific sets — e.g. Tales of Middle-earth, most
+          recent Secret Lairs — and only show up here once you own a card from a set that has
+          one.
+        </div>
+      </div>
+    );
+  }
+
+  const cardmarketUrl = (name) =>
+    `https://www.cardmarket.com/en/Magic/Products/Search?searchString=${encodeURIComponent(name)}`;
+
+  return (
+    <>
+      {artSets.map((art) => {
+        const isOpen = expanded === art.code;
+        const pct = art.count ? Math.round((art.owned / art.count) * 100) : null;
+        return (
+          <div key={art.code} style={{ borderBottom: `1px solid rgba(185,191,199,0.15)` }}>
+            <div
+              onClick={() => openRoster(art.code)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 20,
+                padding: "18px 4px",
+                cursor: "pointer",
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div className="serif" style={{ fontWeight: 600, fontSize: 17, color: C.goldBright }}>
+                  {art.name}
+                </div>
+                <div
+                  className="mono"
+                  style={{
+                    fontSize: 10,
+                    letterSpacing: 1,
+                    textTransform: "uppercase",
+                    color: C.parchmentDim,
+                    marginTop: 4,
+                  }}
+                >
+                  {art.code.toUpperCase()} · from your {art.parentCode.toUpperCase()} cards ·{" "}
+                  {art.owned}/{art.count} owned
+                </div>
+              </div>
+
+              {art.count && (
+                <div style={{ width: 220, maxWidth: "40vw" }}>
+                  <div
+                    style={{
+                      height: 7,
+                      background: "rgba(0,0,0,0.5)",
+                      borderRadius: 4,
+                      overflow: "hidden",
+                      boxShadow: "inset 0 1px 2px rgba(0,0,0,0.6)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${pct}%`,
+                        background: C.gold,
+                        borderRadius: 4,
+                        transition: "width 0.3s ease",
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="display" style={{ fontWeight: 700, fontSize: 24, color: C.goldBright, minWidth: 74, textAlign: "right" }}>
+                {pct !== null ? `${pct}%` : "…"}
+                <span
+                  className="mono"
+                  style={{ display: "block", fontSize: 9, letterSpacing: 1.5, color: C.parchmentDim, fontWeight: 400, marginTop: 2 }}
+                >
+                  {isOpen ? "CLOSE" : "COMPLETE"}
+                </span>
+              </div>
+            </div>
+
+            {isOpen && (
+              <div style={{ paddingBottom: 24 }}>
+                {rosterLoading && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.parchmentDim, fontSize: 13, padding: "6px 4px 14px" }}>
+                    <Loader2 size={15} style={{ animation: "spin 1s linear infinite" }} />
+                    Loading the art series from Scryfall…
+                  </div>
+                )}
+                {rosterError && (
+                  <div style={{ color: C.redBright, fontSize: 13, padding: "6px 4px 14px" }}>{rosterError}</div>
+                )}
+
+                {roster && (
+                  <>
+                    <CompletionCost roster={roster} ownedCount={ownedCount} />
+
+                    <div style={{ border: `1px solid rgba(185,191,199,0.2)`, borderRadius: 8, overflow: "hidden" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 10,
+                          flexWrap: "wrap",
+                          padding: "11px 14px",
+                          background: "rgba(0,0,0,0.3)",
+                          borderBottom: `1px solid rgba(185,191,199,0.15)`,
+                        }}
+                      >
+                        <div style={{ display: "flex", gap: 6 }}>
+                          {["all", "missing", "owned"].map((f) => (
+                            <button
+                              key={f}
+                              onClick={() => setRosterFilter(f)}
+                              className="mono"
+                              style={{
+                                fontSize: 10,
+                                letterSpacing: 1,
+                                textTransform: "uppercase",
+                                background: rosterFilter === f ? C.stock : "transparent",
+                                color: rosterFilter === f ? C.stockInk : C.parchmentDim,
+                                border: `1px solid ${rosterFilter === f ? C.stock : "rgba(185,191,199,0.25)"}`,
+                                borderRadius: 3,
+                                padding: "4px 10px",
+                                cursor: "pointer",
+                              }}
+                            >
+                              {f}
+                            </button>
+                          ))}
+                        </div>
+
+                        <input
+                          value={rosterSearch}
+                          onChange={(e) => setRosterSearch(e.target.value)}
+                          placeholder="Filter names…"
+                          style={{
+                            background: C.bgPanel2,
+                            border: `1px solid ${C.border}`,
+                            borderRadius: 4,
+                            padding: "6px 10px",
+                            color: C.parchment,
+                            fontSize: 12,
+                            width: 150,
+                          }}
+                        />
+
+                        <label
+                          className="mono"
+                          style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 10, letterSpacing: 0.5, textTransform: "uppercase", color: C.parchmentDim }}
+                        >
+                          New cards go to
+                          <select
+                            value={targetCollection}
+                            onChange={(e) => setTargetCollection(e.target.value)}
+                            style={{
+                              background: C.bgPanel2,
+                              border: `1px solid ${C.border}`,
+                              borderRadius: 4,
+                              padding: "5px 8px",
+                              color: C.parchment,
+                              fontSize: 11.5,
+                              textTransform: "none",
+                              letterSpacing: 0,
+                            }}
+                          >
+                            <option value={UNCATEGORIZED}>Uncategorized</option>
+                          </select>
+                        </label>
+                      </div>
+
+                      <div style={{ maxHeight: 440, overflowY: "auto" }}>
+                        {roster
+                          .filter((e) => {
+                            const n = ownedCount(e);
+                            if (rosterFilter === "missing" && n > 0) return false;
+                            if (rosterFilter === "owned" && n === 0) return false;
+                            const nm = cleanArtCardName(e.name);
+                            if (rosterSearch && !nm.toLowerCase().includes(rosterSearch.toLowerCase())) return false;
+                            return true;
+                          })
+                          .map((e) => {
+                            const n = ownedCount(e);
+                            const displayName = cleanArtCardName(e.name);
+                            const key = e.scryfallId || `${e.set}-${e.collectorNumber}`;
+                            return (
+                              <div
+                                key={key}
+                                className={flashKey === key ? "rowflash" : ""}
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: "52px 1fr 110px 110px",
+                                  gap: 12,
+                                  alignItems: "center",
+                                  padding: "8px 14px",
+                                  borderBottom: `1px solid rgba(185,191,199,0.09)`,
+                                  fontSize: 13,
+                                }}
+                                onMouseEnter={(ev) => setPreview({ entry: e, y: ev.clientY })}
+                                onMouseMove={(ev) => setPreview({ entry: e, y: ev.clientY })}
+                                onMouseLeave={() => setPreview(null)}
+                              >
+                                <span className="mono" style={{ fontSize: 10.5, color: C.parchmentDim }}>
+                                  #{e.collectorNumber}
+                                </span>
+                                <span
+                                  className="serif"
+                                  style={{
+                                    fontWeight: 500,
+                                    color: n > 0 ? C.parchment : C.parchmentDim,
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      display: "inline-block",
+                                      width: 7,
+                                      height: 7,
+                                      borderRadius: "50%",
+                                      marginRight: 8,
+                                      verticalAlign: 1,
+                                      background: RARITY_FILL[e.rarity] || C.rarityCommon,
+                                    }}
+                                  />
+                                  {displayName}
+                                </span>
+                                <span
+                                  className="mono"
+                                  style={{
+                                    fontSize: 10.5,
+                                    color: C.parchmentDim,
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                  title={e.artist || ""}
+                                >
+                                  {e.artist || ""}
+                                </span>
+                                <Stepper
+                                  n={n}
+                                  onMinus={() => {
+                                    onRemoveCopy(e);
+                                    setFlashKey(key);
+                                  }}
+                                  onPlus={() => {
+                                    onAddCopy({ ...e, name: displayName }, targetCollection);
+                                    setFlashKey(key);
+                                  }}
+                                />
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {preview && preview.entry.imageUrl && (
+        <div
+          style={{
+            position: "fixed",
+            left: 24,
+            top: Math.min(Math.max(preview.y - 140, 16), window.innerHeight - 300),
+            zIndex: 60,
+            pointerEvents: "none",
+            width: 200,
+            borderRadius: 10,
+            overflow: "hidden",
+            boxShadow: "0 20px 40px -10px rgba(0,0,0,0.85), 0 0 0 1px rgba(232,236,241,0.2)",
+          }}
+        >
+          <img
+            src={preview.entry.imageUrl}
+            alt={cleanArtCardName(preview.entry.name)}
+            style={{ width: "100%", display: "block" }}
+          />
+        </div>
+      )}
+    </>
   );
 }
 
@@ -8320,11 +9112,11 @@ function MoneyInput({ valueUsd, onChange, placeholder, autoFocus, step = "0.01" 
   );
 }
 
-function AddCardModal({ defaultCollectionId, collections, cards, allocationPreview, onClose, onAdd, onCreateCollection }) {
+function AddCardModal({ prefill, defaultCollectionId, collections, cards, allocationPreview, onClose, onAdd, onCreateCollection }) {
   const [mode, setMode] = useState("search");
   const [query, setQuery] = useState("");
   const [setCode, setSetCode] = useState("");
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState(prefill || null);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
 
@@ -8344,8 +9136,12 @@ function AddCardModal({ defaultCollectionId, collections, cards, allocationPrevi
   const searchInputRef = useRef(null);
 
   const [quantity, setQuantity] = useState(1);
-  const [finish, setFinish] = useState("nonfoil");
-  const [condition, setCondition] = useState("NM");
+  // Duplicating an owned card defaults to matching its own finish and
+  // condition — most re-pulls are the same printing again. Flipping to a
+  // different finish (the foil-you-just-pulled case) is one click away in
+  // the picker rather than the default.
+  const [finish, setFinish] = useState(prefill ? finishOf(prefill) : "nonfoil");
+  const [condition, setCondition] = useState(prefill?.condition || "NM");
   // Adding while a collection is filtered? Default to that collection.
   const [collectionId, setCollectionId] = useState(defaultCollectionId || UNCATEGORIZED);
   const [costOverride, setCostOverride] = useState(null);
@@ -8441,7 +9237,7 @@ function AddCardModal({ defaultCollectionId, collections, cards, allocationPrevi
     }
     if (!result) return;
     const base = result;
-    onAdd(
+    const outcome = onAdd(
       {
         ...base,
         quantity: Number(quantity) || 1,
@@ -8455,7 +9251,14 @@ function AddCardModal({ defaultCollectionId, collections, cards, allocationPrevi
       keepOpen
     );
     setSession((prev) => [
-      { name: base.name, set: base.set, num: base.collectorNumber, qty: Number(quantity) || 1, finish },
+      {
+        name: base.name,
+        set: base.set,
+        num: base.collectorNumber,
+        qty: Number(quantity) || 1,
+        finish,
+        merged: !!outcome?.merged,
+      },
       ...prev,
     ]);
 
@@ -8481,7 +9284,41 @@ function AddCardModal({ defaultCollectionId, collections, cards, allocationPrevi
   }
 
   return (
-    <ModalShell title="Add a card" onClose={onClose}>
+    <ModalShell title={prefill ? "Add another copy" : "Add a card"} onClose={onClose}>
+      {prefill && (
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            background: C.bgPanel2,
+            border: `1px solid ${C.border}`,
+            borderRadius: 8,
+            padding: 10,
+            marginBottom: 16,
+          }}
+        >
+          <div
+            style={{
+              width: 44,
+              aspectRatio: "5 / 7",
+              borderRadius: 4,
+              overflow: "hidden",
+              border: `1px solid ${C.border}`,
+              flexShrink: 0,
+            }}
+          >
+            <CardArt card={prefill} />
+          </div>
+          <div style={{ fontSize: 12.5, color: C.parchmentDim, lineHeight: 1.5 }}>
+            Duplicating <b style={{ color: C.parchment }}>{prefill.name}</b> — same printing,
+            same {(prefill.set || "").toUpperCase()} #{prefill.collectorNumber}. Change the
+            finish below if this pull is different (a foil, say), then add it as its own copy.
+          </div>
+        </div>
+      )}
+
+      {!prefill && (
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <TabButton active={mode === "search"} onClick={() => setMode("search")}>
           By name
@@ -8490,8 +9327,9 @@ function AddCardModal({ defaultCollectionId, collections, cards, allocationPrevi
           By code
         </TabButton>
       </div>
+      )}
 
-      {mode === "search" ? (
+      {prefill ? null : mode === "search" ? (
         <>
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
             <input
@@ -9010,6 +9848,9 @@ function AddCardModal({ defaultCollectionId, collections, cards, allocationPrevi
                   {i === 0 ? "✓ " : ""}
                   {x.qty > 1 ? `${x.qty}× ` : ""}
                   {x.name}
+                  {x.merged && (
+                    <span style={{ opacity: 0.7 }}> (already owned — quantity bumped)</span>
+                  )}
                 </span>
                 <span style={{ flexShrink: 0, opacity: 0.8 }}>
                   {(x.set || "").toUpperCase()} {x.num || ""}
@@ -10114,7 +10955,7 @@ function ImportModal({ collections, onClose, onCreateCollection, onImportCards, 
   );
 }
 
-function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onUpdate, onDelete, onSell, onUnsell }) {
+function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onUpdate, onDelete, onSell, onUnsell, onDuplicate }) {
   const [deckNote, setDeckNote] = useState("");
   const [quantity, setQuantity] = useState(card.quantity);
   const [finish, setFinish] = useState(finishOf(card));
@@ -10625,6 +11466,26 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
         >
           Save changes
         </button>
+        {!card.sold && (
+          <button
+            onClick={() => onDuplicate(card)}
+            title="Add another copy of this exact printing — handy for a foil or another pull of the same card"
+            style={{
+              background: "none",
+              border: `1px solid ${C.border}`,
+              color: C.parchmentDim,
+              borderRadius: 6,
+              padding: "10px 14px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <Copy size={14} style={{ verticalAlign: "-2px", marginRight: 5 }} />
+            Duplicate
+          </button>
+        )}
         {!card.sold && (
           <button
             onClick={onSell}

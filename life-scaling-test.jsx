@@ -84,3 +84,4 @@ check("expanded list is capped tighter at 3 columns (84px, not 110px)", !!expand
 
 console.log(ok ? "\nALL PASS" : "\nFAIL");
 if (!ok) process.exit(1);
+process.exit(0);

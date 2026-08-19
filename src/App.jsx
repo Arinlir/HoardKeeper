@@ -3,7 +3,8 @@ import {
   Plus, Upload, RefreshCw, Search, X, TrendingUp, TrendingDown,
   Sparkles, Trash2, Pencil, Download, Layers, ChevronDown, Check,
   AlertCircle, Loader2, LibraryBig, BarChart3, Coins, CheckSquare, Square, MapPin, Tag,
-  RotateCcw, RotateCw, Swords, Users, Settings, Heart, Palette, Copy
+  RotateCcw, RotateCw, Swords, Users, Settings, Heart, Palette, Copy,
+  Grid3x3, LayoutGrid, Maximize2
 } from "lucide-react";
 import Papa from "papaparse";
 import {
@@ -428,6 +429,23 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("added");
   const [typeFilter, setTypeFilter] = useState("all");
+  // Grid tile size, persisted so a preference sticks across sessions. The
+  // minmax() lower bound is what actually controls how many columns fit —
+  // bigger tiles mean fewer per row, but the art (and any text on it) reads
+  // properly instead of shrinking into an unreadable postage stamp.
+  const [tileSize, setTileSize] = useState(() => {
+    try {
+      return localStorage.getItem("hk-tile-size") || "comfortable";
+    } catch (e) {
+      return "comfortable";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("hk-tile-size", tileSize);
+    } catch (e) {}
+  }, [tileSize]);
+  const TILE_MIN_PX = { compact: 140, comfortable: 170, large: 230 };
   const [colorFilter, setColorFilter] = useState("all"); // all | W U B R G | M | C
   const [showCharts, setShowCharts] = useState(false);
   const [view, setView] = useState("collection");
@@ -742,6 +760,30 @@ export default function App() {
     };
   }, [cards, collections]);
 
+  // Art cards vs. everything else, scoped to whatever's currently filtered
+  // (a specific collection, "All", a search, etc). Computed separately from
+  // `filtered` itself so the "does this scope even have any art cards"
+  // question doesn't depend on which sub-tab is currently selected.
+  const [cardsSubView, setCardsSubView] = useState("cards"); // "cards" | "art"
+  const hasArtInScope = useMemo(() => {
+    let list = activeFilter === SOLD ? cards.filter((c) => c.sold) : cards.filter((c) => !c.sold);
+    if (activeFilter !== "all" && activeFilter !== SOLD) {
+      list = list.filter((c) => (c.collectionId || UNCATEGORIZED) === activeFilter);
+    }
+    if (typeFilter !== "all") list = list.filter((c) => cardTypes(c).includes(typeFilter));
+    if (colorFilter !== "all") list = list.filter((c) => bucketOf(c) === colorFilter);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((c) => c.name.toLowerCase().includes(q));
+    }
+    return list.some((c) => c.isArt);
+  }, [cards, activeFilter, typeFilter, colorFilter, search]);
+  // Don't get stuck on the Art Cards sub-tab showing an empty grid after
+  // switching to a collection (or filter) that has none.
+  useEffect(() => {
+    if (!hasArtInScope && cardsSubView === "art") setCardsSubView("cards");
+  }, [hasArtInScope, cardsSubView]);
+
   const filtered = useMemo(() => {
     let list = activeFilter === SOLD ? cards.filter((c) => c.sold) : cards.filter((c) => !c.sold);
     if (activeFilter !== "all" && activeFilter !== SOLD) {
@@ -758,6 +800,12 @@ export default function App() {
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter((c) => c.name.toLowerCase().includes(q));
+    }
+    // Art cards get their own sub-tab instead of being mixed into the main
+    // grid — only actually split when there's something to split (a
+    // collection with no art cards renders exactly as before).
+    if (hasArtInScope) {
+      list = list.filter((c) => (cardsSubView === "art" ? c.isArt : !c.isArt));
     }
     list = [...list];
     if (sortBy === "name" || sortBy === "alpha-grouped")
@@ -788,7 +836,7 @@ export default function App() {
       });
     else list.sort((a, b) => (b.added || 0) - (a.added || 0));
     return list;
-  }, [cards, activeFilter, search, sortBy, typeFilter, colorFilter, collections]);
+  }, [cards, activeFilter, search, sortBy, typeFilter, colorFilter, collections, hasArtInScope, cardsSubView]);
 
   // Section headers for the two grouped views. Built from `filtered`, which
   // is already sorted correctly for grouping (alphabetical or rarity order)
@@ -835,6 +883,11 @@ export default function App() {
     return cards.find((c) => {
       if (c.sold) return false;
       if (finishOf(c) !== finish) return false;
+      // A signed art card and an unsigned one look identical to Scryfall
+      // (it doesn't track the distinction at all) but they're worth
+      // tracking as separate rows, same reasoning as finish above — don't
+      // let a signed pull silently merge into an existing unsigned row.
+      if (!!c.signed !== !!cardData.signed) return false;
       if (cardData.scryfallId && c.scryfallId) return c.scryfallId === cardData.scryfallId;
       return (
         !!cardData.set &&
@@ -885,6 +938,9 @@ export default function App() {
         typeLine: cardData.typeLine || "",
         rarity: cardData.rarity || "",
         scryfallId: cardData.scryfallId || null,
+        artist: cardData.artist || null,
+        isArt: !!cardData.isArt,
+        signed: !!cardData.signed,
       },
     ]);
     return { id, merged: false };
@@ -1076,6 +1132,7 @@ export default function App() {
       (c) =>
         !c.sold &&
         finishOf(c) === "nonfoil" &&
+        !c.signed && // roster adds are never pre-marked signed; don't merge into a signed row
         ((c.scryfallId && c.scryfallId === entry.scryfallId) ||
           (c.set === entry.set && c.collectorNumber === entry.collectorNumber))
     );
@@ -1116,6 +1173,9 @@ export default function App() {
         colors: entry.colors,
         rarity: entry.rarity,
         scryfallId: entry.scryfallId,
+        artist: entry.artist || null,
+        isArt: !!entry.isArt,
+        signed: false,
       },
     ]);
   }
@@ -1531,12 +1591,54 @@ export default function App() {
         setTypeFilter={setTypeFilter}
         colorFilter={colorFilter}
         setColorFilter={setColorFilter}
+        tileSize={tileSize}
+        setTileSize={setTileSize}
         selectMode={selectMode}
         onToggleSelectMode={() => {
           if (selectMode) exitSelectMode();
           else setSelectMode(true);
         }}
       />
+      )}
+
+      {view === "collection" && hasArtInScope && (
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            margin: "14px clamp(14px, 4vw, 28px) 0",
+          }}
+        >
+          {[
+            { key: "cards", label: "Cards" },
+            { key: "art", label: "Art Cards" },
+          ].map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setCardsSubView(t.key)}
+              className="mono"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: cardsSubView === t.key ? STOCK_BG : "transparent",
+                color: cardsSubView === t.key ? C.stockInk : C.parchmentDim,
+                border: `1px solid ${cardsSubView === t.key ? C.stock : "rgba(185,191,199,0.26)"}`,
+                borderRadius: 5,
+                padding: "7px 15px",
+                fontSize: 11.5,
+                letterSpacing: 0.6,
+                textTransform: "uppercase",
+                fontWeight: 600,
+                cursor: "pointer",
+                boxShadow: cardsSubView === t.key ? STOCK_SHADOW : "none",
+              }}
+            >
+              {t.key === "art" && <Palette size={12} />}
+              {t.label}
+            </button>
+          ))}
+        </div>
       )}
 
       {notice && (
@@ -1637,7 +1739,7 @@ export default function App() {
                   className="card-grid"
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
+                    gridTemplateColumns: `repeat(auto-fill, minmax(${TILE_MIN_PX[tileSize]}px, 1fr))`,
                     gap: 20,
                   }}
                 >
@@ -1663,7 +1765,7 @@ export default function App() {
             className="card-grid"
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
+              gridTemplateColumns: `repeat(auto-fill, minmax(${TILE_MIN_PX[tileSize]}px, 1fr))`,
               gap: 20,
               marginTop: 20,
               paddingBottom: selectMode ? 70 : 0,
@@ -2107,7 +2209,7 @@ function IconButton({ onClick, label, icon, disabled, active, title }) {
   );
 }
 
-function FilterBar({ collections, cards, active, setActive, search, setSearch, sortBy, setSortBy, typeFilter, setTypeFilter, colorFilter, setColorFilter, selectMode, onToggleSelectMode }) {
+function FilterBar({ collections, cards, active, setActive, search, setSearch, sortBy, setSortBy, typeFilter, setTypeFilter, colorFilter, setColorFilter, selectMode, onToggleSelectMode, tileSize, setTileSize }) {
   const counts = useMemo(() => {
     const m = {};
     cards.filter((c) => !c.sold).forEach((c) => {
@@ -2281,6 +2383,41 @@ function FilterBar({ collections, cards, active, setActive, search, setSearch, s
         <CheckSquare size={15} />
         {selectMode ? "Done" : "Select"}
       </button>
+
+      {/* card tile size — persisted, since low-res thumbnails at the default
+          density are genuinely hard to read without opening the card */}
+      <div
+        title="Card size"
+        style={{
+          display: "flex",
+          border: `1px solid ${C.border}`,
+          borderRadius: 6,
+          overflow: "hidden",
+        }}
+      >
+        {[
+          { key: "compact", icon: <Grid3x3 size={13} /> },
+          { key: "comfortable", icon: <LayoutGrid size={13} /> },
+          { key: "large", icon: <Maximize2 size={13} /> },
+        ].map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTileSize(t.key)}
+            title={t.key.charAt(0).toUpperCase() + t.key.slice(1)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              padding: "8px 9px",
+              background: tileSize === t.key ? C.gold : "transparent",
+              color: tileSize === t.key ? C.bg : C.parchmentDim,
+              border: "none",
+              cursor: "pointer",
+            }}
+          >
+            {t.icon}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -4261,6 +4398,42 @@ const KEYWORD_GUIDE = [
   { k: "Partner", re: /\bpartner\b/, d: "Commander mechanic: two legends with partner can share the command zone as co-commanders." },
   { k: "Devotion", re: /\bdevotion\b/, d: "Counts the colored mana symbols among permanents you control. More committed to a color, bigger the payoff." },
   { k: "The Ring tempts you", re: /the ring tempts you/, d: "A Lord of the Rings mechanic: each temptation upgrades your Ring's powers and picks a Ring-bearer creature that gets progressively harder to block and more dangerous." },
+
+  // ---- expanded batch: commonly missed keywords from the last decade or so of sets ----
+  { k: "Convoke", re: /\bconvoke\b/, d: "You can tap untapped creatures you control to help cast this spell — each one pays for one generic mana, or one mana of its own color." },
+  { k: "Delve", re: /\bdelve\b/, d: "You can exile cards from your graveyard to help pay this spell's generic mana cost, one card per generic mana." },
+  { k: "Escape", re: /\bescape\b/, d: "You can cast this from your graveyard by paying its escape cost, which includes exiling a number of other cards from your graveyard." },
+  { k: "Mutate", re: /\bmutate\b/, d: "Cast this onto a non-Human creature you own instead of the battlefield. The two merge into one creature with all abilities, using whichever card's stats are on top." },
+  { k: "Foretell", re: /\bforetell\b/, d: "During your turn, you can pay {2} and exile this from your hand face down. Later, cast it for its (usually cheaper) foretell cost." },
+  { k: "Disturb", re: /\bdisturb\b/, d: "You can cast this from your graveyard as its (usually different) back face, typically an Aura or lesser version, for its disturb cost." },
+  { k: "Blitz", re: /\bblitz\b/, d: "Cast a creature for its blitz cost and it gains haste, plus you draw a card when it dies — but it's sacrificed at the next end step." },
+  { k: "Backup", re: /\bbackup\b/, d: "This creature enters and gives +1/+1 counters and some of its own abilities to itself and/or another target creature for the turn." },
+  { k: "Bargain", re: /\bbargain\b/, d: "You can sacrifice an artifact, enchantment, or token as you cast this for an extra effect or discount." },
+  { k: "Offspring", re: /\boffspring\b/, d: "Pay the offspring cost as you cast this creature to also create a 1/1 copy of it." },
+  { k: "Impending", re: /\bimpending\b/, d: "Cast for its impending cost, it enters as a non-creature enchantment with a countdown; once the counters run out it becomes a creature." },
+  { k: "Discover", re: /\bdiscover \d/, d: "Exile cards from the top of your library until you hit a nonland card costing less than the discover value, then cast it free or put it in hand." },
+  { k: "Boast", re: /\bboast\b/, d: "An ability you can activate only if this creature attacked this turn." },
+  { k: "Blood token", re: /blood token/, d: "An artifact token: pay 1 and discard a card to draw a card. A slower, card-filtering cousin of Clue and Treasure." },
+  { k: "Role token", re: /role token/, d: "An Aura token that attaches to a creature and grants it a small, fixed bonus (like +1/+1 or flying) depending on which role it is." },
+  { k: "Manifest", re: /\bmanifest(s|ed)?\b/, d: "Put the top card of your library onto the battlefield face down as a 2/2 creature. It can be turned face up later if it's a creature card." },
+  { k: "Storm", re: /\bstorm\b/, d: "When you cast this, copy it once for each other spell cast earlier this turn. Can produce a huge number of copies in the right deck." },
+  { k: "Affinity", re: /\baffinity for\b/, d: "This spell costs {1} less to cast for each permanent you control matching the stated type (usually artifacts)." },
+  { k: "Explore", re: /\bexplores?\b/, d: "Reveal the top card of your library. Put it in hand if it's a land; otherwise put a +1/+1 counter on the exploring creature and choose whether to keep the card on top or bin it." },
+  { k: "Amass", re: /\bamass\b/, d: "Put counters on an Army creature you control, creating a 0/0 Army token first if you don't have one." },
+  { k: "Jump-start", re: /jump-start/, d: "Cast this from your graveyard by discarding a card in addition to its normal cost, then it's exiled instead of returning to the graveyard." },
+  { k: "Unearth", re: /\bunearth\b/, d: "Pay the unearth cost to return this creature from your graveyard to the battlefield with haste — but it's exiled if it would leave the battlefield, or at the next end step." },
+  { k: "Persist", re: /\bpersist\b/, d: "When this dies, if it had no -1/-1 counters on it, return it to the battlefield with a -1/-1 counter." },
+  { k: "Wither", re: /\bwither\b/, d: "This deals damage to creatures in the form of -1/-1 counters instead of regular damage, which doesn't heal at end of turn." },
+  { k: "Infect", re: /\binfect\b/, d: "This deals damage to creatures as -1/-1 counters and to players as poison counters instead of life loss. Ten poison counters is a loss." },
+  { k: "Connive", re: /\bconnives?\b/, d: "Draw a card, then discard a card. If you discarded a nonland card this way, put a +1/+1 counter on the connived creature." },
+  { k: "Ninjutsu", re: /\bninjutsu\b/, d: "Return an unblocked attacker you control to hand to put this creature from hand onto the battlefield attacking in its place." },
+  { k: "Cycling", re: /\bcycling\b/, d: "Pay the cycling cost and discard this card from your hand to draw a new card — a way to turn a dead draw into a fresh one." },
+  { k: "Morph", re: /\bmorph\b/, d: "You can cast this face down as a vanilla 2/2 for {3}, then later pay its morph cost to turn it face up." },
+  { k: "Bestow", re: /\bbestow\b/, d: "Cast this for its bestow cost to have it enter as an Aura enchanting a creature instead of a creature itself, granting its stats and abilities." },
+  { k: "Embalm / Eternalize", re: /\b(embalm|eternalize)\b/, d: "Exile this card from your graveyard to create a token copy of it (embalm makes it the printed size; eternalize makes it a 4/4)." },
+  { k: "Enlist", re: /\benlist\b/, d: "As this attacks, you can tap an untapped non-attacking creature to add its power to this one's for combat." },
+  { k: "Casualty", re: /\bcasualty\b/, d: "You can sacrifice a creature with the stated power or greater as you cast this to copy the spell." },
+  { k: "Alliance", re: /\balliance\b/, d: "An ability word: triggers whenever another creature enters the battlefield under your control." },
 ];
 
 /* ============================================================
@@ -4768,13 +4941,12 @@ function LifeCounterView({ onExit }) {
 }
 
 function GlossaryView({ cards }) {
-  const [oracle, setOracle] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("lf-oracle-cache")) || {};
-    } catch (e) {
-      return {};
-    }
-  });
+  // Reads and writes through the exact same cache fetchOracleTexts uses
+  // (localStorage key "lf-oracle-v2") — this used to read from a different,
+  // stale key ("lf-oracle-cache") that nothing ever wrote to, so every scan
+  // appeared to vanish on the next visit even though the real cache was
+  // sitting there correctly the whole time.
+  const [oracle, setOracle] = useState({});
   const [scanning, setScanning] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -4792,6 +4964,25 @@ function GlossaryView({ cards }) {
     } catch (e) {}
     setScanning(false);
   }
+
+  // Load automatically on mount/whenever the collection changes — cards
+  // already in the cache resolve instantly with no network call at all, so
+  // this only ever costs something real for genuinely new cards. No more
+  // needing to remember to press Scan just to see what you already scanned.
+  useEffect(() => {
+    let live = true;
+    const ids = owned.filter((c) => c.scryfallId).map((c) => c.scryfallId);
+    if (ids.length === 0) return;
+    fetchOracleTexts(ids)
+      .then((map) => {
+        if (live) setOracle((prev) => ({ ...prev, ...map }));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [owned.map((c) => c.scryfallId).join(",")]);
 
   const entries = useMemo(() => {
     return KEYWORD_GUIDE.map((kw) => {
@@ -4872,8 +5063,9 @@ function GlossaryView({ cards }) {
           }}
         >
           The glossary reads your cards' rules text to find which mechanics actually appear in your
-          collection. Hit <b style={{ color: C.parchment }}>Scan</b> to fetch the texts from Scryfall
-          — one-time, then cached.
+          collection — it loads automatically and stays cached, so this only takes a moment the
+          first time. New cards get picked up the next time you open this tab, or press{" "}
+          <b style={{ color: C.parchment }}>Scan</b> to fetch them right away.
         </div>
       )}
 
@@ -5750,6 +5942,13 @@ function DeckGallery({ deck, commander, cardById, oracleMap, isStandard }) {
     const c = cardById[e.cardId];
     if (c) members.push({ card: c, qty: e.qty || 1 });
   });
+  // Alphabetical by name, same reasoning as the Roles view — but the
+  // commander (if pinned first above) stays first regardless.
+  members.sort((a, b) => {
+    if (a.isCommander) return -1;
+    if (b.isCommander) return 1;
+    return a.card.name.localeCompare(b.card.name);
+  });
 
   const basics = Object.entries(deck.basics || {});
 
@@ -6454,6 +6653,10 @@ function DecksView({ cards, decks, setDecks, valueOf, collections }) {
     if (!c) return;
     (grouped[e.role] = grouped[e.role] || []).push(c);
   });
+  // Alphabetical within each role, not insertion order — otherwise a card
+  // added last month sits above one added five minutes ago for no reason
+  // visible to the person looking at the list.
+  Object.values(grouped).forEach((list) => list.sort((a, b) => a.name.localeCompare(b.name)));
 
   const identity = isStandard ? deck.colors || [] : commander?.colors || [];
   // Which decks are holding a given card, for explaining why it's unavailable.
@@ -7060,30 +7263,50 @@ async function fetchSetRoster(code) {
 // independent Scryfall sets — full art, no rules text, layout "art_series" —
 // linked back to their parent expansion via parent_set_code. Fetched once
 // and cached for a month since this list barely changes.
-async function fetchArtSeriesCompanions() {
-  const cacheKey = "lf-art-companions";
+// The full Scryfall set list, fetched once and cached — both the "which of
+// my sets have an art series" lookup and the "every art series that exists"
+// lookup (for searching by name across all of them) are derived from this
+// same list, so it's fetched only once regardless of which is needed first.
+async function fetchAllSets() {
+  const cacheKey = "lf-all-sets";
   try {
     const cached = JSON.parse(localStorage.getItem(cacheKey));
     if (cached && Date.now() - cached.t < 30 * 864e5) return cached.d;
   } catch (e) {}
-  const map = {};
-  let url = `${SCRYFALL}/sets`;
-  const res = await fetch(url);
+  const res = await fetch(`${SCRYFALL}/sets`);
   if (!res.ok) throw new Error("couldn't load the set list");
   const data = await res.json();
-  (data.data || []).forEach((set) => {
-    if (
-      set.set_type === "memorabilia" &&
-      set.parent_set_code &&
-      /art series/i.test(set.name)
-    ) {
+  const list = data.data || [];
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), d: list }));
+  } catch (e) {}
+  return list;
+}
+
+function isArtSeriesSet(set) {
+  return set.set_type === "memorabilia" && /art series/i.test(set.name);
+}
+
+async function fetchArtSeriesCompanions() {
+  const sets = await fetchAllSets();
+  const map = {};
+  sets.forEach((set) => {
+    if (isArtSeriesSet(set) && set.parent_set_code) {
       map[set.parent_set_code] = { code: set.code, name: set.name, count: set.card_count };
     }
   });
-  try {
-    localStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), d: map }));
-  } catch (e) {}
   return map;
+}
+
+// Every art series set Scryfall knows about, regardless of whether you own
+// anything from its parent — used by the Add Card "Art card" search, since
+// you might be adding a card from a series you don't otherwise collect.
+async function fetchAllArtSeriesSets() {
+  const sets = await fetchAllSets();
+  return sets
+    .filter(isArtSeriesSet)
+    .map((set) => ({ code: set.code, name: set.name, count: set.card_count, parentCode: set.parent_set_code || null }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 const RARITY_ORDER = ["common", "uncommon", "rare", "mythic"];
@@ -7973,7 +8196,7 @@ function ArtCardsView({ cards, onAddCopy, onRemoveCopy }) {
                                     setFlashKey(key);
                                   }}
                                   onPlus={() => {
-                                    onAddCopy({ ...e, name: displayName }, targetCollection);
+                                    onAddCopy({ ...e, name: displayName, isArt: true }, targetCollection);
                                     setFlashKey(key);
                                   }}
                                 />
@@ -9135,6 +9358,51 @@ function AddCardModal({ prefill, defaultCollectionId, collections, cards, alloca
   const codeNumRef = useRef(null);
   const searchInputRef = useRef(null);
 
+  // --- Art card search: scoped to real art-series sets only, never mixed
+  // in with regular search results, so it can't return the wrong thing. ---
+  const [artSets, setArtSets] = useState(null); // null = still loading
+  const [artSetsError, setArtSetsError] = useState("");
+  const [artQuery, setArtQuery] = useState("");
+  const [artSeriesFilter, setArtSeriesFilter] = useState("");
+  const [artCandidates, setArtCandidates] = useState([]);
+  const [artSearching, setArtSearching] = useState(false);
+  const [artError, setArtError] = useState("");
+  const [signed, setSigned] = useState(prefill?.signed || false);
+  const artInputRef = useRef(null);
+
+  useEffect(() => {
+    let live = true;
+    fetchAllArtSeriesSets()
+      .then((sets) => {
+        if (live) setArtSets(sets);
+      })
+      .catch(() => {
+        if (live) setArtSetsError("Couldn't load the list of art series from Scryfall.");
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  async function doArtSearch() {
+    if (!artQuery.trim() || !artSets || artSets.length === 0) return;
+    setArtSearching(true);
+    setArtError("");
+    setArtCandidates([]);
+    try {
+      const scope = artSeriesFilter
+        ? [artSeriesFilter]
+        : artSets.map((s) => s.code);
+      const scopeClause = `(${scope.map((c) => `e:${c}`).join(" or ")})`;
+      const r = await scryfallSearch(`${scopeClause} ${artQuery.trim()}`, "prints", 24);
+      if (r.length === 0) setArtError("No art cards match that name in this scope.");
+      setArtCandidates(r);
+    } catch (e) {
+      setArtError(`Search failed — ${e.message}`);
+    }
+    setArtSearching(false);
+  }
+
   const [quantity, setQuantity] = useState(1);
   // Duplicating an owned card defaults to matching its own finish and
   // condition — most re-pulls are the same printing again. Flipping to a
@@ -9237,9 +9505,14 @@ function AddCardModal({ prefill, defaultCollectionId, collections, cards, alloca
     }
     if (!result) return;
     const base = result;
+    // Art series cards store their name as "X // X" (same front/back name);
+    // cleanArtCardName collapses that for display and is a no-op for every
+    // other card, so it's safe to apply unconditionally here.
+    const isArt = mode === "art" || !!prefill?.isArt;
     const outcome = onAdd(
       {
         ...base,
+        name: cleanArtCardName(base.name),
         quantity: Number(quantity) || 1,
         finish,
         foil: finish === "foil",
@@ -9247,6 +9520,8 @@ function AddCardModal({ prefill, defaultCollectionId, collections, cards, alloca
         collectionId: finalCollectionId,
         location: location.trim(),
         costOverride,
+        isArt,
+        signed: isArt ? signed : false,
       },
       keepOpen
     );
@@ -9318,6 +9593,24 @@ function AddCardModal({ prefill, defaultCollectionId, collections, cards, alloca
         </div>
       )}
 
+      {prefill?.isArt && (
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+            color: C.parchment,
+            marginBottom: 16,
+            cursor: "pointer",
+            userSelect: "none",
+          }}
+        >
+          <input type="checkbox" checked={signed} onChange={(e) => setSigned(e.target.checked)} style={{ width: 15, height: 15 }} />
+          This copy has the artist's signature (gold-stamped)
+        </label>
+      )}
+
       {!prefill && (
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <TabButton active={mode === "search"} onClick={() => setMode("search")}>
@@ -9325,6 +9618,9 @@ function AddCardModal({ prefill, defaultCollectionId, collections, cards, alloca
         </TabButton>
         <TabButton active={mode === "code"} onClick={() => setMode("code")}>
           By code
+        </TabButton>
+        <TabButton active={mode === "art"} onClick={() => setMode("art")}>
+          Art card
         </TabButton>
       </div>
       )}
@@ -9680,6 +9976,170 @@ function AddCardModal({ prefill, defaultCollectionId, collections, cards, alloca
               </div>
             </div>
           )}
+        </>
+      ) : mode === "art" ? (
+        <>
+          {artSetsError && (
+            <div style={{ color: C.redBright, fontSize: 12.5, marginBottom: 12 }}>{artSetsError}</div>
+          )}
+          {artSets === null && !artSetsError && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.parchmentDim, fontSize: 13, marginBottom: 12 }}>
+              <Loader2 size={15} style={{ animation: "spin 1s linear infinite" }} />
+              Loading the list of art series from Scryfall…
+            </div>
+          )}
+
+          {artSets && artSets.length > 0 && (
+            <>
+              <p style={{ fontSize: 12, color: C.parchmentDim, marginTop: 0 }}>
+                Searches only within real art-series sets — Sol Ring the playable card won't show
+                up here, only Sol Ring the art card. Since Scryfall doesn't track signed vs.
+                unsigned (they're the same database entry either way), mark it yourself below if
+                your copy has the gold-stamped signature.
+              </p>
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <input
+                  ref={artInputRef}
+                  style={inputStyle}
+                  placeholder="Card name (e.g. Hidden Blade)"
+                  value={artQuery}
+                  onChange={(e) => setArtQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && doArtSearch()}
+                  autoFocus
+                />
+                <button
+                  onClick={doArtSearch}
+                  disabled={artSearching || !artQuery.trim()}
+                  style={{
+                    background: STOCK_BG,
+                    color: C.stockInk,
+                    border: "none",
+                    borderRadius: 6,
+                    padding: "0 18px",
+                    fontWeight: 700,
+                    fontSize: 13,
+                    cursor: artSearching || !artQuery.trim() ? "default" : "pointer",
+                    opacity: artSearching || !artQuery.trim() ? 0.6 : 1,
+                  }}
+                >
+                  {artSearching ? "…" : "Search"}
+                </button>
+              </div>
+
+              <select
+                value={artSeriesFilter}
+                onChange={(e) => setArtSeriesFilter(e.target.value)}
+                style={{ ...inputStyle, marginBottom: 12 }}
+              >
+                <option value="">Any art series</option>
+                {artSets.map((s) => (
+                  <option key={s.code} value={s.code}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+
+              {artError && (
+                <div style={{ color: C.redBright, fontSize: 12.5, marginBottom: 12 }}>{artError}</div>
+              )}
+
+              {artCandidates.length > 0 && (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    maxHeight: 280,
+                    overflowY: "auto",
+                    marginBottom: 12,
+                  }}
+                >
+                  {artCandidates.map((c) => (
+                    <div
+                      key={c.scryfallId}
+                      onClick={() => {
+                        setResult(c);
+                        setArtCandidates([]);
+                        setArtQuery(cleanArtCardName(c.name));
+                      }}
+                      style={{
+                        display: "flex",
+                        gap: 10,
+                        alignItems: "center",
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        cursor: "pointer",
+                        border: `1px solid ${C.border}`,
+                        background: C.bgPanel2,
+                      }}
+                    >
+                      <div style={{ width: 36, aspectRatio: "5 / 7", borderRadius: 3, overflow: "hidden", flexShrink: 0 }}>
+                        <CardArt card={c} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, color: C.parchment, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {cleanArtCardName(c.name)}
+                        </div>
+                        <div className="mono" style={{ fontSize: 10.5, color: C.parchmentDim }}>
+                          {c.setName} · #{c.collectorNumber}
+                          {c.artist ? ` · ${c.artist}` : ""}
+                        </div>
+                      </div>
+                      <div className="mono" style={{ fontSize: 12, color: C.goldBright, flexShrink: 0 }}>
+                        {fmt(c.usd)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {result && (
+            <div
+              style={{
+                display: "flex",
+                gap: 12,
+                alignItems: "center",
+                background: C.bgPanel2,
+                border: `1px solid ${C.border}`,
+                borderRadius: 8,
+                padding: 10,
+                marginBottom: 16,
+              }}
+            >
+              <div style={{ width: 44, aspectRatio: "5 / 7", borderRadius: 4, overflow: "hidden", flexShrink: 0 }}>
+                <CardArt card={result} />
+              </div>
+              <div style={{ fontSize: 13 }}>
+                <div style={{ fontWeight: 700, color: C.parchment }}>{cleanArtCardName(result.name)}</div>
+                <div style={{ color: C.parchmentDim, fontSize: 12 }}>
+                  {result.setName} · #{result.collectorNumber}
+                  {result.artist ? ` · ${result.artist}` : ""}
+                </div>
+                <div className="mono" style={{ color: C.goldBright, marginTop: 4 }}>
+                  {fmt(result.usd)}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 13,
+              color: C.parchment,
+              marginBottom: 16,
+              cursor: "pointer",
+              userSelect: "none",
+            }}
+          >
+            <input type="checkbox" checked={signed} onChange={(e) => setSigned(e.target.checked)} style={{ width: 15, height: 15 }} />
+            This copy has the artist's signature (gold-stamped)
+          </label>
         </>
       ) : null}
 
@@ -10964,6 +11424,7 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
   const [costOverride, setCostOverride] = useState(card.costOverride ?? null);
   const [valueOverride, setValueOverride] = useState(card.valueOverride ?? null);
   const [location, setLocation] = useState(card.location || "");
+  const [signed, setSigned] = useState(!!card.signed);
   const [refreshing, setRefreshing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -10974,6 +11435,28 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
   const [fixError, setFixError] = useState("");
   const [fixResults, setFixResults] = useState([]);
   const [fixQuery, setFixQuery] = useState(card.name);
+
+  // Rules text right in the modal — the actual fix for cards being
+  // unreadable at grid size, since no reasonable thumbnail size makes full
+  // oracle text legible. fetchOracleTexts caches by scryfallId, so revisiting
+  // the same card is free after the first open.
+  const [oracle, setOracle] = useState(null); // { t, ty, parts } | null
+  const [oracleLoading, setOracleLoading] = useState(false);
+  useEffect(() => {
+    if (!card.scryfallId) return;
+    let live = true;
+    setOracleLoading(true);
+    fetchOracleTexts([card.scryfallId])
+      .then((cache) => {
+        if (live) setOracle(cache[card.scryfallId] || null);
+      })
+      .finally(() => {
+        if (live) setOracleLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [card.scryfallId]);
 
   async function loadPrintings() {
     setFixMode("prints");
@@ -11041,6 +11524,7 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
       location: location.trim(),
       costOverride,
       valueOverride,
+      signed,
     });
     onClose();
   }
@@ -11197,6 +11681,43 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
               {(currentVal * card.quantity - cost) >= 0 ? "+" : "-"}
               {fmt(Math.abs(currentVal * card.quantity - cost))} total
             </span>
+          </div>
+
+          <div
+            style={{
+              marginTop: 14,
+              paddingTop: 12,
+              borderTop: `1px solid ${C.border}`,
+              fontSize: 12.5,
+              color: C.parchmentDim,
+              lineHeight: 1.55,
+            }}
+          >
+            {oracleLoading && !oracle && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, opacity: 0.8 }}>
+                <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} />
+                Loading rules text…
+              </div>
+            )}
+            {oracle && (
+              <>
+                {oracle.ty && (
+                  <div className="mono" style={{ fontSize: 10.5, letterSpacing: 0.5, textTransform: "uppercase", color: C.goldBright, marginBottom: 6 }}>
+                    {oracle.ty}
+                  </div>
+                )}
+                {oracle.t ? (
+                  <div style={{ whiteSpace: "pre-line" }}>{oracle.t}</div>
+                ) : card.isArt ? (
+                  <div style={{ fontStyle: "italic", opacity: 0.85 }}>
+                    Art card — no rules text.{card.artist ? ` Illustrated by ${card.artist}.` : ""}
+                    {card.signed && <span style={{ color: C.goldBright }}> · Signed copy</span>}
+                  </div>
+                ) : (
+                  <div style={{ fontStyle: "italic", opacity: 0.7 }}>No rules text on file for this card.</div>
+                )}
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -11369,6 +11890,25 @@ function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onU
         <FinishPicker card={card} value={finish} onChange={setFinish} />
         <TreatmentTags card={card} />
       </Field>
+
+      {card.isArt && (
+        <Field label="Signature">
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 13,
+              color: C.parchment,
+              cursor: "pointer",
+              userSelect: "none",
+            }}
+          >
+            <input type="checkbox" checked={signed} onChange={(e) => setSigned(e.target.checked)} style={{ width: 15, height: 15 }} />
+            This copy has the artist's signature (gold-stamped)
+          </label>
+        </Field>
+      )}
 
       <Field label="Collection">
         <select style={inputStyle} value={collectionId} onChange={(e) => setCollectionId(e.target.value)}>

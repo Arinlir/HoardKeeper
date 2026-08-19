@@ -69,8 +69,13 @@ let addBtn = [...document.querySelectorAll("button")].find((b) => b.textContent.
 await act(async () => { addBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
 check("session list explains the merge", document.body.textContent.includes("already owned"));
 
-const closeBtn = [...document.querySelectorAll("button")].filter((b) => b.querySelector("svg") && !b.textContent.trim())[0];
-if (closeBtn) await act(async () => { closeBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+// click the modal backdrop directly -- more robust than hunting for an
+// icon-only button, since other icon-only buttons (tile-size controls)
+// exist elsewhere on the page and could be matched first
+const closeBackdrop = [...document.querySelectorAll("div")].find(
+  (d) => (d.getAttribute("style") || "").includes("position: fixed") && (d.getAttribute("style") || "").includes("rgba(10, 11, 13, 0.72)")
+);
+if (closeBackdrop) await act(async () => { closeBackdrop.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
 
 let saved = await latestCards();
 check("same-finish duplicate: still exactly one row for Sol Ring", saved.filter((c) => c.name === "Sol Ring").length === 1);

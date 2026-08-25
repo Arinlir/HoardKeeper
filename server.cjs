@@ -162,6 +162,41 @@ async function api(req, res, url) {
     return json(res, 200, { ok: true });
   }
 
+  // PUT /api/store/:name/rename — rename a profile. Authenticated with the
+  // CURRENT pin via x-pin; the new name travels in the body. Writes the
+  // vault under the new filename FIRST, then removes the old one — if
+  // anything fails partway, the worst case is a leftover old file, never a
+  // lost vault.
+  const rn = url.pathname.match(/^\/api\/store\/([^/]+)\/rename$/);
+  if (rn && req.method === "PUT") {
+    const name = rn[1].toLowerCase();
+    if (!safeName(name))
+      return json(res, 400, { error: "Profile names: 1-24 chars, a-z 0-9 - _" });
+    const file = profilePath(name);
+    if (!fs.existsSync(file)) return json(res, 404, { error: "No such profile" });
+    const rec = JSON.parse(fs.readFileSync(file, "utf8"));
+    const currentPin = req.headers["x-pin"] || "";
+    if (rec.pinHash && rec.pinHash !== hash(currentPin))
+      return json(res, 403, { error: "Wrong PIN" });
+    let body;
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch (e) {
+      return json(res, 400, { error: "Bad JSON" });
+    }
+    const newName = String(body.newName || "").toLowerCase().trim();
+    if (!safeName(newName))
+      return json(res, 400, { error: "New name: 1-24 chars, a-z 0-9 - _" });
+    if (newName === name) return json(res, 200, { ok: true, name: newName });
+    const newFile = profilePath(newName);
+    if (fs.existsSync(newFile)) return json(res, 409, { error: "That name is already taken" });
+    rec.updated = Date.now();
+    fs.writeFileSync(newFile + ".tmp", JSON.stringify(rec));
+    fs.renameSync(newFile + ".tmp", newFile);
+    fs.unlinkSync(file);
+    return json(res, 200, { ok: true, name: newName });
+  }
+
   return json(res, 404, { error: "Not found" });
 }
 

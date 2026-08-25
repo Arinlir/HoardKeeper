@@ -81,9 +81,7 @@ check("real art series listed in scope dropdown", document.body.textContent.incl
 check("a token set with a similar shape is correctly excluded", !document.body.textContent.includes("Thunder Junction Tokens"));
 
 // click the modal backdrop directly -- ModalShell closes on backdrop click
-const backdrop = [...document.querySelectorAll("div")].find(
-  (d) => (d.getAttribute("style") || "").includes("position: fixed") && (d.getAttribute("style") || "").includes("rgba(10, 11, 13, 0.72)")
-);
+const backdrop = document.querySelector('[data-role="modal-backdrop"]');
 check("found the Add Card modal backdrop", !!backdrop);
 if (backdrop) await act(async () => { backdrop.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
 

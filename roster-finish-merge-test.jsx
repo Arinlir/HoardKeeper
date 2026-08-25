@@ -76,8 +76,11 @@ await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
 
 check("roster loaded with Attercop", document.body.textContent.includes("Attercop"));
 
-const rosterRow = [...document.querySelectorAll(".roster-row")].find((d) => d.textContent.includes("Attercop"));
-const plusBtn = rosterRow ? [...rosterRow.querySelectorAll("button")].find((b) => b.textContent.trim() === "+") : null;
+// tiles in the new grid have a title attribute matching the card name;
+// walk up to the tile container, then find its + stepper button
+const nameEl = [...document.querySelectorAll('[title="Attercop"]')][0];
+const rosterTile = nameEl?.parentElement;
+const plusBtn = rosterTile ? [...rosterTile.querySelectorAll("button")].find((b) => b.textContent.trim() === "+") : null;
 check("found the roster's + stepper for Attercop", !!plusBtn);
 
 await act(async () => { plusBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });

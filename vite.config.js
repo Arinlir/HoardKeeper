@@ -15,6 +15,18 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    rollupOptions: {
+      output: {
+        // recharts and papaparse are already deferred behind React.lazy()/dynamic
+        // import() (see src/App.jsx), so Rollup already splits them out of the
+        // main chunk on its own - this just gives each vendor library its own
+        // named, independently cacheable chunk instead of an anonymous one.
+        manualChunks: {
+          recharts: ["recharts"],
+          papaparse: ["papaparse"],
+        },
+      },
+    },
   },
   // Relative paths so the built site works from any subfolder or reverse proxy path.
   base: "./",

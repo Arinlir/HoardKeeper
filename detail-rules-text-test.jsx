@@ -56,10 +56,11 @@ function check(label, cond) {
 const sol = document.querySelector('[data-card-id="s1"]');
 await act(async () => { sol.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
 await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
-check("Sol Ring's real oracle text shown under the price", document.body.textContent.includes("Add {C}{C}"));
+check("Sol Ring's oracle text shown (plain text part)", document.body.textContent.includes("Add"));
+check("mana symbols rendered as styled badges, not literal {C}{C}", !document.body.textContent.includes("{C}{C}") && [...document.querySelectorAll("span")].filter((s) => s.textContent.trim() === "C").length >= 2);
 check("type line shown too", document.body.textContent.includes("Artifact"));
 
-const backdrop1 = [...document.querySelectorAll("div")].find((d) => (d.getAttribute("style") || "").includes("position: fixed") && (d.getAttribute("style") || "").includes("rgba(10, 11, 13, 0.72)"));
+const backdrop1 = document.querySelector('[data-role="modal-backdrop"]');
 await act(async () => { backdrop1.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
 
 const artSubTab = [...document.querySelectorAll("button")].find((b) => b.textContent.trim().includes("Art Cards"));

@@ -7,6 +7,11 @@
     <meta name="description" content="Track your Magic: The Gathering collection, its value and what you paid for it." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Single shared stylesheet for the whole app - previously each of App(),
+         AuthGate and ProfileGate injected its own @import for an overlapping
+         subset of these weights at mount time, refetching on every boot-state
+         transition. One link here loads once, in parallel with the JS. -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Spectral:wght@400;500;600&family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" />
   </head>
   <body>
     <div id="root"></div>

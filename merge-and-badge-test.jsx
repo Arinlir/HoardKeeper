@@ -72,9 +72,7 @@ check("session list explains the merge", document.body.textContent.includes("alr
 // click the modal backdrop directly -- more robust than hunting for an
 // icon-only button, since other icon-only buttons (tile-size controls)
 // exist elsewhere on the page and could be matched first
-const closeBackdrop = [...document.querySelectorAll("div")].find(
-  (d) => (d.getAttribute("style") || "").includes("position: fixed") && (d.getAttribute("style") || "").includes("rgba(10, 11, 13, 0.72)")
-);
+const closeBackdrop = document.querySelector('[data-role="modal-backdrop"]');
 if (closeBackdrop) await act(async () => { closeBackdrop.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
 
 let saved = await latestCards();

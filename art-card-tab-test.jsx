@@ -23,7 +23,6 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 dom.window.HTMLElement.prototype.attachEvent = function () {};
 dom.window.HTMLElement.prototype.detachEvent = function () {};
 
-localStorage.setItem("lf-profile", JSON.stringify({ name: "michael", pin: "" }));
 
 const scryfallSets = {
   data: [
@@ -43,12 +42,13 @@ const cards = [
 let putCalls = [];
 globalThis.fetch = (url, opts) => {
   const u = String(url);
-  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "pin" }) });
-  if (u.includes("/api/store/michael") && opts?.method === "PUT") {
+  if (u.includes("/api/auth/me")) return Promise.resolve({ ok: true, json: async () => ({ user: { id: 1, email: "michael@example.com", verified: true, handle: "michael" } }) });
+  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "accounts" }) });
+  if (u.includes("/api/store") && opts?.method === "PUT") {
     putCalls.push(JSON.parse(opts.body));
     return Promise.resolve({ ok: true, json: async () => ({ ok: true }) });
   }
-  if (u.includes("/api/store/michael"))
+  if (u.includes("/api/store"))
     return Promise.resolve({ ok: true, json: async () => ({ value: JSON.stringify({ collections: [], cards }) }) });
   if (u.includes("api.scryfall.com/sets") && !u.includes("/sets/"))
     return Promise.resolve({ ok: true, json: async () => scryfallSets });
@@ -80,10 +80,14 @@ await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
 check("real art series listed in scope dropdown", document.body.textContent.includes("Assassin's Creed Art Series"));
 check("a token set with a similar shape is correctly excluded", !document.body.textContent.includes("Thunder Junction Tokens"));
 
-// click the modal backdrop directly -- ModalShell closes on backdrop click
+// Add Card is a full-screen search now, so there's no backdrop to click --
+// it closes with its own X.
 const backdrop = document.querySelector('[data-role="modal-backdrop"]');
-check("found the Add Card modal backdrop", !!backdrop);
-if (backdrop) await act(async () => { backdrop.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+check("found the Add Card screen", !!backdrop);
+const closeBtn = backdrop?.querySelector('button[aria-label="Close"]');
+check("it has a Close button", !!closeBtn);
+if (closeBtn) await act(async () => { closeBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+check("and Close really closes it", !document.querySelector('[data-role="modal-backdrop"]'));
 
 // --- 2. owned art card's detail view ---
 // the only owned card is an art card, so it's correctly hidden from the
@@ -100,8 +104,8 @@ const signedBox = document.querySelector('input[type=checkbox]');
 check("checkbox reflects the card's actual signed:true state", signedBox && signedBox.checked === true);
 
 await act(async () => { signedBox.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-const saveBtn = [...document.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith("Save"));
-await act(async () => { saveBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+// No Save button any more — the toggle writes itself.
+check("detail view has no Save button", ![...document.querySelectorAll("button")].some((b) => b.textContent.trim().startsWith("Save")));
 await act(async () => { await new Promise((r) => setTimeout(r, 700)); });
 
 const saved = JSON.parse(putCalls[putCalls.length - 1].value).cards;

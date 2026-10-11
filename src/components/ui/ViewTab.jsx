@@ -4,7 +4,7 @@ import { C, NOTCH } from "../../lib/tokens";
 export function ViewTab({ label, active, onClick }) {
   return (
     <button
-      className="display"
+      className="display view-tab"
       onClick={onClick}
       aria-pressed={active}
       style={{

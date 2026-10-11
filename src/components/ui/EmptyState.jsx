@@ -38,7 +38,7 @@ export function EmptyState({ onAddCard, onImport }) {
         >
           Add a card
         </button>
-        <IconButton onClick={onImport} label="Import CSV" icon={<Upload size={15} />} />
+        <IconButton onClick={onImport} label="Import" icon={<Upload size={15} />} />
       </div>
     </div>
   );

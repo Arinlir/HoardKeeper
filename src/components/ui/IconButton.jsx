@@ -6,8 +6,12 @@ export function IconButton({ onClick, label, icon, disabled, active, title }) {
     <button
       onClick={onClick}
       disabled={disabled}
-      title={title}
-      aria-label={typeof label === "string" && label ? undefined : title}
+      title={title || (typeof label === "string" ? label : undefined)}
+      // The visible label is hidden on narrow screens (see .icon-btn-label in
+      // App.jsx's stylesheet), so the accessible name has to come from the
+      // attribute, not the text — otherwise these become unnamed icon buttons
+      // on exactly the devices most likely to be using a screen reader.
+      aria-label={typeof label === "string" && label ? label : title}
       aria-pressed={active}
       style={{
         display: "flex",
@@ -26,7 +30,7 @@ export function IconButton({ onClick, label, icon, disabled, active, title }) {
       }}
     >
       {icon}
-      {label}
+      <span className="icon-btn-label">{label}</span>
     </button>
   );
 }

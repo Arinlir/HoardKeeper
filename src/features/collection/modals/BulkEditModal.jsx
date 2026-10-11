@@ -1,16 +1,23 @@
 import React, { useState } from "react";
 import { Field, inputStyle } from "../../../components/ui/Field";
 import { ModalShell } from "../../../components/ui/ModalShell";
+import { TagEditor } from "../../../components/ui/TagEditor";
 import { UNCATEGORIZED } from "../../../lib/scryfall";
 import { C, STOCK_BG } from "../../../lib/tokens";
+import { collectionOptions } from "../../../lib/collectionTree";
 
-export function BulkEditModal({ count, decks, overrideCount, collections, onClose, onApply }) {
+export function BulkEditModal({ count, decks, overrideCount, collections, tagSuggestions, onClose, onApply }) {
   const [collectionId, setCollectionId] = useState("");
   const [location, setLocation] = useState("");
   const [condition, setCondition] = useState("");
   const [foil, setFoil] = useState("");
   const [costMode, setCostMode] = useState("");
+  const [proxyMode, setProxyMode] = useState("");
+  const [wantMode, setWantMode] = useState("");
+  const [tradeMode, setTradeMode] = useState("");
   const [deckId, setDeckId] = useState("");
+  // Added to whatever each card already carries, never replacing it.
+  const [tags, setTags] = useState([]);
 
   function apply() {
     const patch = {};
@@ -24,6 +31,17 @@ export function BulkEditModal({ count, decks, overrideCount, collections, onClos
     // Clearing the override puts the card back on the collection's even split —
     // the right state for anything that came out of a booster.
     if (costMode === "clear") patch.costOverride = null;
+    if (proxyMode) patch.proxy = proxyMode === "on";
+    if (wantMode) {
+      patch.wanted = wantMode === "on";
+      if (wantMode === "off") patch.wantNote = "";
+    }
+    if (tradeMode) {
+      patch.forTrade = tradeMode === "on";
+      // Off the list, the note has nothing left to describe.
+      if (tradeMode === "off") patch.tradeNote = "";
+    }
+    if (tags.length) patch.addTags = tags;
     if (Object.keys(patch).length === 0 && !deckId) return;
     onApply(patch, deckId || null);
   }
@@ -38,13 +56,17 @@ export function BulkEditModal({ count, decks, overrideCount, collections, onClos
         <select id="be-collection" style={inputStyle} value={collectionId} onChange={(e) => setCollectionId(e.target.value)}>
           <option value="">Keep as is</option>
           <option value={UNCATEGORIZED}>Uncategorized</option>
-          {collections.map((c) => (
+          {collectionOptions(collections).map((c) => (
             <option key={c.id} value={c.id}>
-              {c.name}
+              {c.label}
             </option>
           ))}
         </select>
       </Field>
+
+      <div style={{ marginBottom: 14 }}>
+        <TagEditor tags={tags} suggestions={tagSuggestions || []} onChange={setTags} label="Add tags" />
+      </div>
 
       <Field label="Physical location" htmlFor="be-location">
         <input
@@ -68,6 +90,30 @@ export function BulkEditModal({ count, decks, overrideCount, collections, onClos
           </div>
         )}
       </Field>
+
+      <div style={{ display: "flex", gap: 12 }}>
+        <Field label="Proxy" htmlFor="be-proxy">
+          <select id="be-proxy" style={inputStyle} value={proxyMode} onChange={(e) => setProxyMode(e.target.value)}>
+            <option value="">Keep as is</option>
+            <option value="on">Mark as proxies — no value, no cost</option>
+            <option value="off">These are real cards</option>
+          </select>
+        </Field>
+        <Field label="Wishlist" htmlFor="be-want">
+          <select id="be-want" style={inputStyle} value={wantMode} onChange={(e) => setWantMode(e.target.value)}>
+            <option value="">Keep as is</option>
+            <option value="on">Want real copies of these</option>
+            <option value="off">Take off the wishlist</option>
+          </select>
+        </Field>
+        <Field label="Trade list" htmlFor="be-trade">
+          <select id="be-trade" style={inputStyle} value={tradeMode} onChange={(e) => setTradeMode(e.target.value)}>
+            <option value="">Keep as is</option>
+            <option value="on">Put these up for trade</option>
+            <option value="off">Take off the trade list</option>
+          </select>
+        </Field>
+      </div>
 
       {decks?.length > 0 && (
         <Field label="Add all selected to deck" htmlFor="be-deck">

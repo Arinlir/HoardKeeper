@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Not required: the rest of the app works fine on a device without a
+         camera, and Play would otherwise hide the app from those devices. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+</manifest>

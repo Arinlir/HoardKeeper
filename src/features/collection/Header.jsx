@@ -1,5 +1,5 @@
 import React from "react";
-import { BarChart3, Download, Layers, Loader2, Plus, RefreshCw, Settings, Upload, Users } from "lucide-react";
+import { BarChart3, Download, Layers, Loader2, Plus, RefreshCw, Settings, Upload } from "lucide-react";
 import { IconButton } from "../../components/ui/IconButton";
 import { StatPlaque } from "../../components/ui/StatPlaque";
 import { CUR, fmt } from "../../lib/format";
@@ -7,7 +7,6 @@ import { C, STOCK_BG, STOCK_SHADOW, NOTCH, NOTCH_SM } from "../../lib/tokens";
 
 export function Header({
   totals,
-  gainPct,
   onAddCard,
   onManageCollections,
   onImport,
@@ -18,11 +17,7 @@ export function Header({
   showCharts,
   onToggleCharts,
   onSettings,
-  // Who's signed in, and how to switch -- surfaced directly in the header
-  // rather than buried behind the currency/Settings button, which nothing
-  // about visually suggests "this is where profiles live."
-  profileName,
-  onSwitchProfile,
+  onHome,
 }) {
   return (
     <header
@@ -36,7 +31,16 @@ export function Header({
       }}
     >
       <div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <a
+          href="/"
+          aria-label="Binderwyrm — home (collection)"
+          onClick={(e) => {
+            if (!onHome || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return;
+            e.preventDefault();
+            onHome();
+          }}
+          style={{ display: "flex", alignItems: "center", gap: 10, color: "inherit", textDecoration: "none", cursor: "pointer" }}
+        >
           <div
             aria-hidden="true"
             style={{
@@ -57,9 +61,9 @@ export function Header({
               color: C.goldBright,
             }}
           >
-            HOARDKEEPER
+            BINDERWYRM
           </h1>
-        </div>
+        </a>
         <div
           className="mono"
           role="status"
@@ -81,35 +85,36 @@ export function Header({
       </div>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-        <StatPlaque label="Worth" value={fmt(totals.value)} />
-        <StatPlaque label="Invested" value={fmt(totals.cost)} />
+        <StatPlaque
+          label="Worth"
+          value={fmt(totals.value)}
+          hint="Market value of every card you still hold. Proxies count as nothing."
+        />
+        <StatPlaque
+          label="Invested"
+          value={fmt(totals.cost)}
+          hint="What those cards cost you — collection totals split across their cards, plus any individual purchase prices."
+        />
         <StatPlaque
           label="Unrealized"
           value={`${totals.delta >= 0 ? "+" : "−"}${fmt(Math.abs(totals.delta))}`}
           tone={totals.delta >= 0 ? "up" : "down"}
-          sub={gainPct !== null ? `${totals.delta >= 0 ? "+" : "−"}${Math.abs(gainPct).toFixed(1)}%` : null}
+          hint="Worth minus Invested: the gain or loss still on paper, because you haven't sold these cards."
         />
         {totals.realized > 0 && (
           <StatPlaque
             label="Realized"
             value={`${totals.realizedDelta >= 0 ? "+" : "−"}${fmt(Math.abs(totals.realizedDelta))}`}
             tone={totals.realizedDelta >= 0 ? "up" : "down"}
+            hint="The same figure for cards you've actually sold: sale proceeds minus what those cards cost you."
           />
         )}
       </div>
 
       <div style={{ width: "100%", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 4 }}>
-        {profileName && (
-          <IconButton
-            onClick={onSwitchProfile}
-            label={`${profileName} · switch`}
-            icon={<Users size={15} />}
-            title="Switch to a different profile"
-          />
-        )}
         <IconButton onClick={onToggleCharts} label={showCharts ? "Hide charts" : "Charts"} icon={<BarChart3 size={15} />} active={showCharts} />
         <IconButton onClick={onSettings} label="Settings" icon={<Settings size={15} />} title={`Currency: ${CUR.code}`} />
-        <IconButton onClick={onImport} label="Import CSV" icon={<Upload size={15} />} />
+        <IconButton onClick={onImport} label="Import" icon={<Upload size={15} />} />
         <IconButton onClick={onExport} label="Export" icon={<Download size={15} />} />
         <IconButton
           onClick={onRefresh}

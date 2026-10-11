@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Ink & Slate canvas (src/lib/tokens.js C.bg). Shown behind the status
+         and navigation bars, and briefly while the page loads. -->
+    <color name="bw_ink">#15171B</color>
+</resources>

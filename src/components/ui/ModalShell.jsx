@@ -1,9 +1,55 @@
 import React, { useEffect, useRef } from "react";
-import { X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { C, STOCK_BG, STOCK_SHADOW, NOTCH } from "../../lib/tokens";
 
-export function ModalShell({ title, onClose, children, width = 480 }) {
+// sideNav (optional): { onPrev, onNext } — big previous/next arrows flanking the
+// dialog, outside it (DetailModal's card stepper). A null handler shows that
+// arrow disabled. Hidden on narrow screens via .modal-side-nav in index.css,
+// where the small arrows in the title bar (headerExtra) take over.
+function SideArrow({ dir, onClick }) {
+  const Icon = dir < 0 ? ChevronLeft : ChevronRight;
+  const label = dir < 0 ? "Previous card" : "Next card";
+  return (
+    <button
+      className="modal-side-nav"
+      data-role={dir < 0 ? "side-prev" : "side-next"}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick?.();
+      }}
+      disabled={!onClick}
+      aria-label={label}
+      title={`${label} (${dir < 0 ? "←" : "→"})`}
+      style={{ clipPath: NOTCH, borderRadius: 0 }}
+    >
+      <Icon size={52} strokeWidth={2.5} />
+    </button>
+  );
+}
+
+// Backdrop click-to-close that ignores a click that began inside the dialog:
+// a press inside it followed by a release on the backdrop is not a backdrop click. A plain onClick also fires
+// when you press inside the dialog (selecting text, dragging a slider, a
+// button that re-renders under the cursor) and let go outside it — the browser
+// reports that click on the common ancestor, i.e. the backdrop — which closed
+// the dialog and lost what you were doing.
+export function useBackdropClose(onClose) {
+  const pressedInside = useRef(false);
+  return {
+    onMouseDown: (e) => {
+      pressedInside.current = e.target !== e.currentTarget;
+    },
+    onClick: (e) => {
+      const ok = e.target === e.currentTarget && !pressedInside.current;
+      pressedInside.current = false;
+      if (ok) onClose?.();
+    },
+  };
+}
+
+export function ModalShell({ title, onClose, children, width = 480, headerExtra = null, sideNav = null }) {
   const titleId = useRef(`modal-title-${Math.random().toString(36).slice(2, 9)}`);
+  const backdropProps = useBackdropClose(onClose);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -26,13 +72,13 @@ export function ModalShell({ title, onClose, children, width = 480 }) {
         zIndex: 50,
         padding: "clamp(10px, 4vw, 20px)",
       }}
-      onClick={onClose}
+      {...backdropProps}
     >
+      {sideNav && <SideArrow dir={-1} onClick={sideNav.onPrev} />}
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId.current}
-        onClick={(e) => e.stopPropagation()}
         style={{
           background: C.bgPanel,
           border: `1px solid ${C.border}`,
@@ -52,8 +98,8 @@ export function ModalShell({ title, onClose, children, width = 480 }) {
             justifyContent: "space-between",
             alignItems: "center",
             gap: 12,
-            margin: "14px 14px 0",
-            padding: "8px 14px",
+            margin: "14px clamp(10px, 3vw, 14px) 0",
+            padding: "8px clamp(10px, 3vw, 14px)",
             background: STOCK_BG,
             borderRadius: 0,
             clipPath: NOTCH,
@@ -68,6 +114,10 @@ export function ModalShell({ title, onClose, children, width = 480 }) {
           >
             {title}
           </h2>
+          {/* headerExtra: optional controls that sit next to the close button
+              (DetailModal's previous/next card stepper). */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          {headerExtra}
           <button
             onClick={onClose}
             aria-label="Close"
@@ -86,9 +136,11 @@ export function ModalShell({ title, onClose, children, width = 480 }) {
           >
             <X size={18} />
           </button>
+          </div>
         </div>
-        <div style={{ padding: "18px 24px 24px", position: "relative" }}>{children}</div>
+        <div style={{ padding: "18px clamp(12px, 4vw, 24px) 24px", position: "relative" }}>{children}</div>
       </div>
+      {sideNav && <SideArrow dir={1} onClick={sideNav.onNext} />}
     </div>
   );
 }

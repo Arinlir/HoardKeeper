@@ -5,5 +5,8 @@ export { matchDecklist as __test_matchDecklist } from "../features/decks/deckIO"
 export { deckToText as __test_deckToText } from "../features/decks/deckIO";
 export { deckToJson as __test_deckToJson } from "../features/decks/deckIO";
 export { jsonToParsed as __test_jsonToParsed } from "../features/decks/deckIO";
+export { importCategoryFor as __test_importCategoryFor } from "../features/decks/categories";
+export { importCategoryDeclarations as __test_importCategoryDeclarations } from "../features/decks/categories";
+export { splitOtherByType as __test_splitOtherByType } from "../features/decks/categories";
 export { computeGlossarySearchDiagnostic as __test_computeGlossarySearchDiagnostic } from "../features/glossary/GlossaryView";
 export { groupRosterByName as __test_groupRosterByName } from "../features/sets/rosterUtils";

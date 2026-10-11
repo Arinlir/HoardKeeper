@@ -160,7 +160,7 @@ export function computeGlossarySearchDiagnostic(query, entries, withText, oracle
 
 export function GlossaryView({ cards }) {
   // Reads and writes through the exact same cache fetchOracleTexts uses
-  // (localStorage key "lf-oracle-v2") — this used to read from a different,
+  // (localStorage key "lf-oracle-v4") — this used to read from a different,
   // stale key ("lf-oracle-cache") that nothing ever wrote to, so every scan
   // appeared to vanish on the next visit even though the real cache was
   // sitting there correctly the whole time.
@@ -313,7 +313,7 @@ export function GlossaryView({ cards }) {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(300px, 100%), 1fr))", gap: 16 }}>
         {entries.map((e) => (
           <div
             key={e.k}

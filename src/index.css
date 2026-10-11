@@ -15,3 +15,52 @@ body {
   font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+
+/* Phone app, live scanner (LiveScanOverlay.jsx). The camera preview is a
+   native view BEHIND the WebView, so while scanning the page must be see-
+   through: no page background, and the app itself hidden. The scanner overlay
+   is portalled to <body>, outside #root, so it stays visible. */
+html.bw-scanning,
+html.bw-scanning body {
+  background: transparent !important;
+}
+html.bw-scanning #root {
+  visibility: hidden;
+  /* skip layout of the whole hidden app while the camera is up (state and scroll are kept) */
+  content-visibility: hidden;
+}
+
+/* Card detail modal: big previous/next arrows on either side of the dialog
+   (ModalShell's sideNav). Colors mirror lib/tokens.js — bgPanel, border,
+   accent, accentFill. Flat and opaque, like the rest of Ink & Slate. */
+.modal-side-nav {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 72px;
+  height: 180px;
+  margin: 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1b1f26;
+  border: 1px solid rgba(111, 166, 209, 0.55);
+  color: #6fa6d1;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.12s, color 0.12s;
+}
+.modal-side-nav:hover:not(:disabled) {
+  background: #2e5c82;
+  color: #e8ecf1;
+}
+.modal-side-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+/* Phones: no room beside the dialog — swipe left/right instead
+   (DetailModal's touch handler). */
+@media (max-width: 760px) {
+  .modal-side-nav {
+    display: none;
+  }
+}

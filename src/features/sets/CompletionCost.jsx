@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import { fmt } from "../../lib/format";
+import { printingPrice } from "../../lib/scryfall";
 import { C, CONSOLE } from "../../lib/tokens";
 
 export function CompletionCost({ roster, ownedCount }) {
@@ -8,7 +9,8 @@ export function CompletionCost({ roster, ownedCount }) {
     roster.forEach((e) => {
       if (ownedCount(e) > 0) return;
       missing++;
-      if (e.usd !== null && e.usd !== undefined) cost += e.usd;
+      const p = printingPrice(e);
+      if (p !== null && p !== undefined) cost += p;
       else unpriced++;
     });
     return { missing, cost, unpriced };

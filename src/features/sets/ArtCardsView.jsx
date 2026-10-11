@@ -7,7 +7,8 @@ import { CompletionCost } from "./CompletionCost";
 import { RARITY_FILL, cleanArtCardName, fetchArtSeriesCompanions, fetchSetRoster } from "./rosterUtils";
 
 export function ArtCardsView({ cards, onAddCopy, onRemoveCopy }) {
-  const owned = useMemo(() => cards.filter((c) => !c.sold && c.set), [cards]);
+  // Proxies don't count as owned here either — same reasoning as SetsView.
+  const owned = useMemo(() => cards.filter((c) => !c.sold && !c.proxy && c.set), [cards]);
   const ownedSetCodes = useMemo(
     () => [...new Set(owned.map((c) => c.set.toLowerCase()))],
     [owned]
@@ -49,7 +50,7 @@ export function ArtCardsView({ cards, onAddCopy, onRemoveCopy }) {
       .map((code) => {
         const comp = companions[code];
         const distinct = new Set(
-          cards.filter((c) => !c.sold && (c.set || "").toLowerCase() === comp.code.toLowerCase())
+          cards.filter((c) => !c.sold && !c.proxy && (c.set || "").toLowerCase() === comp.code.toLowerCase())
             .map((c) => c.collectorNumber || c.name)
         ).size;
         return { parentCode: code, ...comp, owned: distinct };
@@ -329,7 +330,7 @@ export function ArtCardsView({ cards, onAddCopy, onRemoveCopy }) {
                             return (
                               <div
                                 key={key}
-                                className={flashKey === key ? "rowflash" : ""}
+                                className={`art-roster-row${flashKey === key ? " rowflash" : ""}`}
                                 style={{
                                   display: "grid",
                                   gridTemplateColumns: "52px 1fr 110px 110px",
@@ -371,7 +372,7 @@ export function ArtCardsView({ cards, onAddCopy, onRemoveCopy }) {
                                   {displayName}
                                 </span>
                                 <span
-                                  className="mono"
+                                  className="mono art-roster-artist"
                                   style={{
                                     fontSize: 10.5,
                                     color: CONSOLE.dim,

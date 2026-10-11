@@ -24,6 +24,9 @@ export default defineConfig({
         manualChunks: {
           recharts: ["recharts"],
           papaparse: ["papaparse"],
+          // tesseract.js is dynamic-import()ed from lib/ocr.js (only the Scan
+          // tab pulls it in), same pattern as the other two.
+          tesseract: ["tesseract.js"],
         },
       },
     },

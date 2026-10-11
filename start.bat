@@ -1,5 +1,5 @@
 @echo off
-REM HoardKeeper - Windows launcher
+REM Binderwyrm - Windows launcher
 REM First run installs dependencies; after that it just starts the dev server.
 
 cd /d "%~dp0"
@@ -26,7 +26,7 @@ if not exist "node_modules" (
 )
 
 echo.
-echo Starting HoardKeeper at http://localhost:5173
+echo Starting Binderwyrm at http://localhost:5173
 echo Close this window to stop the server.
 echo.
 call npm run dev

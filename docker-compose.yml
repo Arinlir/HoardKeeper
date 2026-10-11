@@ -1,7 +1,7 @@
 services:
-  hoardkeeper:
+  binderwyrm:
     build: .
-    container_name: hoardkeeper
+    container_name: binderwyrm
     restart: unless-stopped
     ports:
       - "8420:8420"

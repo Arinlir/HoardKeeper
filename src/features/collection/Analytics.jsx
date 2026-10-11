@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { fmt, shortDate } from "../../lib/format";
 import { MANA } from "../../lib/mana";
-import { COLOR_BUCKETS, bucketOf, finishOf } from "../../lib/scryfall";
+import { COLOR_BUCKETS, bucketOf, priceMove } from "../../lib/scryfall";
 import { C, RARITY_COLORS, STOCK_BG, STOCK_SHADOW } from "../../lib/tokens";
 import { MoversPanel } from "./MoversPanel";
 
@@ -29,6 +29,19 @@ export function ChartTooltip({ active, payload, label, valueKeys }) {
 }
 
 export function ChartPanel({ title, subtitle, children, height = 240 }) {
+  return (
+    <PanelFrame title={title} subtitle={subtitle}>
+      <div style={{ height }}>
+        <ResponsiveContainer width="100%" height="100%">
+          {children}
+        </ResponsiveContainer>
+      </div>
+    </PanelFrame>
+  );
+}
+
+// Same card as ChartPanel, for panels that aren't a recharts chart.
+export function PanelFrame({ title, subtitle, children }) {
   return (
     <div
       role="figure"
@@ -61,11 +74,7 @@ export function ChartPanel({ title, subtitle, children, height = 240 }) {
           <span className="mono" style={{ fontSize: 10.5, color: C.parchmentDim }}>{subtitle}</span>
         )}
       </div>
-      <div style={{ height }}>
-        <ResponsiveContainer width="100%" height="100%">
-          {children}
-        </ResponsiveContainer>
-      </div>
+      {children}
     </div>
   );
 }
@@ -165,10 +174,11 @@ export function Analytics({ rows, history }) {
     return rows
       .map((r) => {
         const c = r.card;
-        const shiny = finishOf(c) !== "nonfoil";
-        const prev = shiny ? c.prevUsdFoil : c.prevUsd;
-        const now = shiny ? c.usdFoil : c.usd;
-        if (prev === null || prev === undefined || !now || prev === 0) return null;
+        // Same market before and after, on the market you price on.
+        const move = priceMove(c);
+        if (!move) return null;
+        const { prev, now } = move;
+        if (!now || !prev) return null;
         const qty = c.quantity || 1;
         return {
           name: c.name,
@@ -189,7 +199,7 @@ export function Analytics({ rows, history }) {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+        gridTemplateColumns: "repeat(auto-fit, minmax(min(320px, 100%), 1fr))",
         gap: 16,
         marginTop: 20,
       }}

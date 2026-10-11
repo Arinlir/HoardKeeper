@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Binderwyrm</string>
+    <string name="title_activity_main">Binderwyrm</string>
+    <string name="package_name">eu.arinvault.binderwyrm</string>
+    <string name="custom_url_scheme">eu.arinvault.binderwyrm</string>
+</resources>

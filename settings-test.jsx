@@ -35,7 +35,7 @@ await act(async () => { settingsBtn.dispatchEvent(new dom.window.MouseEvent("cli
 
 const text = document.body.textContent;
 check("modal opened", text.includes("Currency & display"));
-check("Support section present", text.includes("Support HoardKeeper"));
+check("Support section present", text.includes("Support Binderwyrm"));
 check("Danger zone present", text.includes("Delete everything"));
 
 // the Ko-fi link itself

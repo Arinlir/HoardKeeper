@@ -1,4 +1,5 @@
 import { finishOf } from "../../lib/scryfall";
+import { importCategoryFor } from "./categories";
 
 export const DECK_BASICS = ["Plains", "Island", "Swamp", "Mountain", "Forest", "Wastes"];
 export const DECK_SECTIONS =
@@ -7,7 +8,9 @@ export const DECK_SECTIONS =
 // Parses a pasted decklist. Handles the common exports — Moxfield, Archidekt,
 // MTGO/Arena — and plain "4 Lightning Bolt" lists.
 export function parseDecklist(text) {
-  const out = { commander: null, entries: [], basics: {}, ignored: [], sideboard: [] };
+  // `partner`: a second commander (Partner, Partner—Character select, a
+  // Background…) — the second line in a Commander section, or a second *CMDR*.
+  const out = { commander: null, partner: null, entries: [], basics: {}, ignored: [], sideboard: [] };
   let section = "deck";
 
   String(text || "")
@@ -51,6 +54,10 @@ export function parseDecklist(text) {
         out.commander = rec;
         return;
       }
+      if ((tags.includes("cmdr") || section === "commander") && !out.partner) {
+        out.partner = rec;
+        return;
+      }
       if (section.startsWith("side") || section.startsWith("maybe") || section === "considering") {
         out.sideboard.push(rec);
         return;
@@ -72,11 +79,13 @@ export function parseDecklist(text) {
 // list names one, then any copy not committed to another deck.
 export function matchDecklist(parsed, cards, committed = {}) {
   const byName = {};
+  const byId = {};
   cards
     .filter((c) => !c.sold)
     .forEach((c) => {
       const k = c.name.toLowerCase();
       (byName[k] = byName[k] || []).push(c);
+      byId[c.id] = c;
     });
 
   const used = {};
@@ -117,6 +126,12 @@ export function matchDecklist(parsed, cards, committed = {}) {
     if (got.length) commanderId = got[0].id;
     else missing.push({ ...parsed.commander, have: 0, isCommander: true });
   }
+  let partnerId = null;
+  if (parsed.partner) {
+    const got = claim(parsed.partner, 1);
+    if (got.length) partnerId = got[0].id;
+    else missing.push({ ...parsed.partner, have: 0, isCommander: true });
+  }
 
   parsed.entries.forEach((rec) => {
     const got = claim(rec);
@@ -124,22 +139,33 @@ export function matchDecklist(parsed, cards, committed = {}) {
     got.forEach((g) => {
       const existing = entries.find((e) => e.cardId === g.id);
       if (existing) existing.qty += g.take;
-      else entries.push({ cardId: g.id, qty: g.take, role: "other" });
+      // A JSON re-import carries the role/category the deck already had —
+      // that's a saved choice and takes priority. A plain-text list has
+      // none, so fall back to splitting by card type (lands, creatures,
+      // artifacts, instants...) instead of dumping everything into "other".
+      else entries.push({ cardId: g.id, qty: g.take, role: rec.role || importCategoryFor(byId[g.id]?.typeLine) });
     });
     if (total === 0) missing.push({ ...rec, have: 0 });
     else if (total < rec.qty) partial.push({ ...rec, have: total });
   });
 
-  return { entries, commanderId, basics: { ...parsed.basics }, missing, partial };
+  // No first commander but a second one found: it leads.
+  if (!commanderId && partnerId) {
+    commanderId = partnerId;
+    partnerId = null;
+  }
+  return { entries, commanderId, partnerId, basics: { ...parsed.basics }, missing, partial };
 }
 
 // Plain-text decklist, the format every deckbuilder understands.
+// `commander` is one card or the command zone (both partners).
 export function deckToText(deck, cardById, commander, tokens, tokenQty) {
   const lines = [];
-  if (commander) {
+  const zone = [].concat(commander || []).filter(Boolean);
+  if (zone.length) {
     lines.push("Commander");
-    lines.push(
-      `1 ${commander.name}${commander.set ? ` (${commander.set.toUpperCase()}) ${commander.collectorNumber || ""}`.trimEnd() : ""}`
+    zone.forEach((c) =>
+      lines.push(`1 ${c.name}${c.set ? ` (${c.set.toUpperCase()}) ${c.collectorNumber || ""}`.trimEnd() : ""}`)
     );
     lines.push("");
     lines.push("Deck");
@@ -177,21 +203,19 @@ export const BASIC_TYPE_LINES = {
 // is exact and the file is self-documenting without cross-referencing
 // Scryfall for what each line actually is.
 export function deckToJson(deck, cardById, commander) {
+  const [lead, second] = [].concat(commander || []).filter(Boolean);
+  const cmdJson = (c) =>
+    c ? { name: c.name, set: c.set, collectorNumber: c.collectorNumber, typeLine: c.typeLine || null } : null;
   return JSON.stringify(
     {
-      hoardkeeper: 1,
+      binderwyrm: 1,
       name: deck.name,
       format: deck.format || "commander",
       colors: deck.colors || null,
       exported: new Date().toISOString(),
-      commander: commander
-        ? {
-            name: commander.name,
-            set: commander.set,
-            collectorNumber: commander.collectorNumber,
-            typeLine: commander.typeLine || null,
-          }
-        : null,
+      commander: cmdJson(lead),
+      // second commander (partners, Backgrounds…); absent in older exports
+      partner: cmdJson(second),
       cards: deck.entries
         .map((e) => {
           const c = cardById[e.cardId];
@@ -218,26 +242,43 @@ export function deckToJson(deck, cardById, commander) {
       })),
       tokenCounts: deck.tokenCounts || {},
       extraTokens: deck.extraTokens || [],
+      // The deck's own named groups (Combo pieces, Stax, etc.) — without
+      // this, re-importing the file couldn't show their labels, only the
+      // raw keys still attached to each card above.
+      categories: deck.categories || [],
     },
     null,
     2
   );
 }
 
-// A HoardKeeper JSON export, converted back into the parser's shape.
+// A Binderwyrm JSON export, converted back into the parser's shape.
 export function jsonToParsed(json) {
   const d = JSON.parse(json);
-  if (!d || !Array.isArray(d.cards)) throw new Error("Not a HoardKeeper deck file");
+  if (!d || !Array.isArray(d.cards)) throw new Error("Not a Binderwyrm deck file");
   return {
-    meta: { name: d.name, format: d.format, colors: d.colors, tokenCounts: d.tokenCounts, extraTokens: d.extraTokens },
+    meta: {
+      name: d.name,
+      format: d.format,
+      colors: d.colors,
+      tokenCounts: d.tokenCounts,
+      extraTokens: d.extraTokens,
+      categories: d.categories || [],
+    },
     commander: d.commander
       ? { qty: 1, name: d.commander.name, set: d.commander.set, num: d.commander.collectorNumber }
       : null,
+    partner: d.partner
+      ? { qty: 1, name: d.partner.name, set: d.partner.set, num: d.partner.collectorNumber }
+      : null,
+    // role travels with each line so re-importing a Binderwyrm export keeps
+    // whatever grouping the deck already had, rather than recomputing it.
     entries: d.cards.map((c) => ({
       qty: c.qty || 1,
       name: c.name,
       set: c.set || null,
       num: c.collectorNumber || null,
+      role: c.role || null,
     })),
     basics: d.basics || {},
     ignored: [],

@@ -1,16 +1,24 @@
-import React, { useState, useEffect, useMemo } from "react";
-import { Copy, LibraryBig, Loader2, RefreshCw, Search, Tag, Trash2 } from "lucide-react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { Copy, Heart, LibraryBig, Loader2, RefreshCw, Repeat, Search, Tag, Trash2 } from "lucide-react";
 import { Field, inputStyle } from "../../../components/ui/Field";
 import { ModalShell } from "../../../components/ui/ModalShell";
+import { TagEditor } from "../../../components/ui/TagEditor";
 import { MoneyInput } from "../../../components/ui/MoneyInput";
+import { PrintingSortBar } from "../../../components/ui/PrintingSortBar";
 import { fmt } from "../../../lib/format";
+import { MarketPrices } from "../../../components/ui/MarketPrices";
 import { renderManaSymbols } from "../../../lib/mana";
-import { UNCATEGORIZED, fetchOracleTexts, finishOf, priceForFinish, scryfallById, scryfallLookup, scryfallSearch } from "../../../lib/scryfall";
-import { C, STOCK_BG, STOCK_SHADOW } from "../../../lib/tokens";
+import { BuyLinks } from "../../../components/ui/BuyLinks";
+import { FORMATS, LEGALITY_LABEL, legalityOf } from "../../../lib/formats";
+import { UNCATEGORIZED, fetchOracleTexts, finishOf, printingMatches, printingPrice, priceForFinish, pricePatch, scryfallById, scryfallLookup, scryfallSearch, sortPrintings } from "../../../lib/scryfall";
+import { C, STOCK_BG, STOCK_SHADOW, NOTCH_SM } from "../../../lib/tokens";
 import { CardArt } from "../CardTile";
 import { FinishPicker, TreatmentTags } from "./FinishPicker";
+import { collectionOptions } from "../../../lib/collectionTree";
 
-export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClose, onUpdate, onDelete, onSell, onUnsell, onDuplicate }) {
+// `nav` (optional): { index, total, onPrev, onNext } — steps through the cards
+// the grid was showing when this was opened. onPrev/onNext are null at the ends.
+export function DetailModal({ card, collections, decks, tagSuggestions, onAddToDeck, cost, onClose, onUpdate, onDelete, onSell, onTrade, onUnsell, onDuplicate, nav = null }) {
   const [deckNote, setDeckNote] = useState("");
   // Every deck that holds this card, either as a regular entry or as the
   // commander — computed fresh from the real deck data, not a manually
@@ -18,7 +26,7 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
   const deckMembership = useMemo(() => {
     return (decks || [])
       .map((d) => {
-        if (d.commanderId === card.id) return { deck: d, role: "commander", qty: 1 };
+        if (d.commanderId === card.id || d.partnerId === card.id) return { deck: d, role: "commander", qty: 1 };
         const entry = d.entries.find((e) => e.cardId === card.id);
         return entry ? { deck: d, role: entry.role, qty: entry.qty || 1 } : null;
       })
@@ -32,6 +40,12 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
   const [valueOverride, setValueOverride] = useState(card.valueOverride ?? null);
   const [location, setLocation] = useState(card.location || "");
   const [signed, setSigned] = useState(!!card.signed);
+  const [proxy, setProxy] = useState(!!card.proxy);
+  const [wanted, setWanted] = useState(!!card.wanted);
+  const [wantNote, setWantNote] = useState(card.wantNote || "");
+  const [tags, setTags] = useState(card.tags || []);
+  const [forTrade, setForTrade] = useState(!!card.forTrade);
+  const [tradeNote, setTradeNote] = useState(card.tradeNote || "");
   const [refreshing, setRefreshing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -42,6 +56,12 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
   const [fixError, setFixError] = useState("");
   const [fixResults, setFixResults] = useState([]);
   const [fixQuery, setFixQuery] = useState(card.name);
+  // Sort/filter for "prints" mode only — "search" mode's results are
+  // different cards by name, not printings of one, so ordering by set or
+  // price doesn't mean the same thing there.
+  const [fixSort, setFixSort] = useState("released");
+  const [fixDir, setFixDir] = useState("desc");
+  const [fixFilter, setFixFilter] = useState("");
 
   // Rules text right in the modal — the actual fix for cards being
   // unreadable at grid size, since no reasonable thumbnail size makes full
@@ -69,9 +89,10 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
     setFixMode("prints");
     setFixError("");
     setFixResults([]);
+    setFixFilter("");
     setFixLoading(true);
     try {
-      const r = await scryfallSearch(`!"${card.name}"`, "prints", 40);
+      const r = await scryfallSearch(`!"${card.name}"`, "prints", 175);
       if (r.length === 0) setFixError("No printings found for that name.");
       setFixResults(r);
     } catch (e) {
@@ -84,6 +105,7 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
     if (!fixQuery.trim()) return;
     setFixError("");
     setFixResults([]);
+    setFixFilter("");
     setFixLoading(true);
     try {
       const r = await scryfallSearch(fixQuery.trim(), "prints", 40);
@@ -107,10 +129,11 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
       scryfallUri: p.scryfallUri,
       imageUrl: p.imageUrl,
       imageUrlLarge: p.imageUrlLarge,
-      prevUsd: null,
-      prevUsdFoil: null,
-      usd: p.usd,
-      usdFoil: p.usdFoil,
+      imageUrlBack: p.imageUrlBack || null,
+      imageUrlBackLarge: p.imageUrlBackLarge || null,
+      // A different printing is a different product on both markets — carry
+      // all of its prices, and don't let Movers compare it with the old one.
+      ...pricePatch({}, p),
       cmc: p.cmc,
       typeLine: p.typeLine,
       colors: p.colors,
@@ -121,8 +144,16 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
     setFixResults([]);
   }
 
-  function save() {
-    onUpdate({
+  // Edits save themselves — there is no Save button. Going through a stack
+  // of cards one by one, a Save click per card was the slowest part.
+  // Toggles, selects and tags commit the moment they change; typed fields
+  // (quantity, location, notes, price overrides) wait until you pause for
+  // half a second. Anything still pending is written before the modal closes
+  // or steps to another card, so nothing typed is ever lost.
+  // Only fields that actually changed since the last write are sent, so just
+  // opening a card never rewrites it.
+  function draftPatch() {
+    return {
       quantity: Number(quantity) || 1,
       finish,
       foil: finish === "foil", // kept in step for anything reading the old flag
@@ -132,9 +163,136 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
       costOverride,
       valueOverride,
       signed,
-    });
-    onClose();
+      proxy,
+      wanted,
+      wantNote: wanted ? wantNote.trim() : "",
+      tags,
+      forTrade,
+      tradeNote: forTrade ? tradeNote.trim() : "",
+    };
   }
+  const committedRef = useRef(null);
+  if (committedRef.current === null) committedRef.current = draftPatch();
+  const [savedFlash, setSavedFlash] = useState(false);
+  const commitRef = useRef(() => {});
+  commitRef.current = () => {
+    const next = draftPatch();
+    const prev = committedRef.current;
+    const changed = {};
+    for (const k of Object.keys(next)) {
+      if (JSON.stringify(next[k]) !== JSON.stringify(prev[k])) changed[k] = next[k];
+    }
+    if (Object.keys(changed).length === 0) return;
+    committedRef.current = next;
+    onUpdate(changed);
+    setSavedFlash(true);
+  };
+  const timerRef = useRef(null);
+  const flush = useCallback(() => {
+    clearTimeout(timerRef.current);
+    timerRef.current = null;
+    commitRef.current();
+  }, []);
+  useEffect(() => {
+    flush();
+  }, [finish, condition, collectionId, signed, proxy, wanted, tags, forTrade, flush]);
+  useEffect(() => {
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(flush, 500);
+  }, [quantity, location, wantNote, tradeNote, costOverride, valueOverride, flush]);
+  useEffect(() => () => flush(), [flush]); // closing (X, Esc, backdrop) or stepping away
+  useEffect(() => {
+    if (!savedFlash) return;
+    const t = setTimeout(() => setSavedFlash(false), 1500);
+    return () => clearTimeout(t);
+  }, [savedFlash]);
+
+  // Previous / next card, without leaving the modal. ← and → do the same,
+  // unless you're typing in a field (where arrows move the cursor) or another
+  // dialog (Sell, Trade) is open on top of this one.
+  const rootRef = useRef(null);
+  const goTo = useCallback(
+    (dir) => {
+      const fn = dir < 0 ? nav?.onPrev : nav?.onNext;
+      if (!fn) return;
+      flush();
+      fn();
+    },
+    [nav, flush]
+  );
+  useEffect(() => {
+    if (!nav) return;
+    const onKey = (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const t = e.target;
+      if (t && (t.isContentEditable || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+      if (t && t.tagName === "INPUT" && !["checkbox", "radio", "button"].includes(t.type)) return;
+      const backdrops = document.querySelectorAll('[data-role="modal-backdrop"]');
+      const top = backdrops[backdrops.length - 1];
+      if (!top || !rootRef.current || !top.contains(rootRef.current)) return;
+      e.preventDefault();
+      goTo(e.key === "ArrowLeft" ? -1 : 1);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [nav, goTo]);
+
+  // Phones: swipe left / right anywhere on the dialog to step cards (the big
+  // side arrows are hidden there — no room). Only a clearly horizontal, quick
+  // flick counts, so scrolling the form up and down never changes card. Swipes
+  // that start in a text field or in something that scrolls sideways are left
+  // alone.
+  useEffect(() => {
+    if (!nav) return;
+    const dialogEl = rootRef.current?.closest('[role="dialog"]');
+    if (!dialogEl) return;
+    let start = null;
+    const scrollsSideways = (el) => {
+      for (let n = el; n && n !== dialogEl; n = n.parentElement) {
+        const ox = window.getComputedStyle(n).overflowX;
+        if ((ox === "auto" || ox === "scroll") && n.scrollWidth > n.clientWidth) return true;
+      }
+      return false;
+    };
+    const onStart = (e) => {
+      const t = e.target;
+      if (e.touches.length !== 1 || (t && (t.closest?.("input, select, textarea, [contenteditable]") || scrollsSideways(t)))) {
+        start = null;
+        return;
+      }
+      start = { x: e.touches[0].clientX, y: e.touches[0].clientY, at: Date.now() };
+    };
+    const onEnd = (e) => {
+      if (!start) return;
+      const tc = e.changedTouches[0];
+      const dx = tc.clientX - start.x;
+      const dy = tc.clientY - start.y;
+      const quick = Date.now() - start.at < 700;
+      start = null;
+      if (!quick || Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      goTo(dx < 0 ? 1 : -1); // finger moves left → next card, like turning a page
+    };
+    dialogEl.addEventListener("touchstart", onStart, { passive: true });
+    dialogEl.addEventListener("touchend", onEnd, { passive: true });
+    return () => {
+      dialogEl.removeEventListener("touchstart", onStart);
+      dialogEl.removeEventListener("touchend", onEnd);
+    };
+  }, [nav, goTo]);
+
+  // Just the position in the title bar; moving is done with the big side
+  // arrows (desktop), ← / → keys, or swiping (phone).
+  const navControls =
+    nav && nav.total > 1 ? (
+      <span
+        data-role="card-nav"
+        className="mono"
+        style={{ fontSize: 11, color: C.stockDim, whiteSpace: "nowrap", marginRight: 4 }}
+      >
+        {nav.index + 1} / {nav.total}
+      </span>
+    ) : null;
 
   async function refreshPrice() {
     setRefreshing(true);
@@ -143,12 +301,12 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
         ? await scryfallById(card.scryfallId)
         : await scryfallLookup(card.name, card.set || undefined);
       onUpdate({
-        prevUsd: card.usd,
-        prevUsdFoil: card.usdFoil,
-        usd: fresh.usd,
-        usdFoil: fresh.usdFoil,
+        ...pricePatch(card, fresh),
+        usdEtched: fresh.usdEtched ?? card.usdEtched ?? null,
         imageUrl: fresh.imageUrl || card.imageUrl,
         imageUrlLarge: fresh.imageUrlLarge || card.imageUrlLarge,
+        imageUrlBack: fresh.imageUrlBack || card.imageUrlBack || null,
+        imageUrlBackLarge: fresh.imageUrlBackLarge || card.imageUrlBackLarge || null,
         scryfallUri: fresh.scryfallUri || card.scryfallUri,
         collectorNumber: card.collectorNumber || fresh.collectorNumber,
         scryfallId: card.scryfallId || fresh.scryfallId,
@@ -160,13 +318,28 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
 
   const currentVal = priceForFinish(card) ?? 0;
 
+  // Only "prints" mode's results are all the same card — sorting/filtering
+  // "search" mode's results (different card names) wouldn't mean anything.
+  const visibleFixResults =
+    fixMode === "prints"
+      ? sortPrintings(fixResults.filter((p) => printingMatches(p, fixFilter)), fixSort, fixDir)
+      : fixResults;
+
   return (
-    <ModalShell title={card.name} onClose={onClose} width={640}>
-      <div style={{ display: "flex", gap: 20, marginBottom: 18 }}>
-        <div style={{ flexShrink: 0 }}>
+    <ModalShell title={card.name} onClose={onClose} width={fixMode ? 900 : 640} headerExtra={navControls}
+      sideNav={
+        nav && nav.total > 1
+          ? { onPrev: nav.onPrev ? () => goTo(-1) : null, onNext: nav.onNext ? () => goTo(1) : null }
+          : null
+      }
+    >
+      <div ref={rootRef} style={{ display: "none" }} />
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 20, marginBottom: 18 }}>
+        <div style={{ flexShrink: 0, width: "min(240px, 100%)" }}>
           <div
             style={{
-              width: 240,
+              width: "100%",
+              maxWidth: 240,
               aspectRatio: "5 / 7",
               borderRadius: 11,
               overflow: "hidden",
@@ -175,7 +348,7 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
               position: "relative",
             }}
           >
-            <CardArt card={card} large />
+            <CardArt card={card} large flippable />
             {finishOf(card) !== "nonfoil" && (
               <>
                 <div className="foil-sheen" />
@@ -183,23 +356,8 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
               </>
             )}
           </div>
-          {card.scryfallUri && (
-            <a
-              href={card.scryfallUri}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                display: "block",
-                textAlign: "center",
-                marginTop: 8,
-                fontSize: 11.5,
-                color: C.parchmentDim,
-                textDecoration: "none",
-              }}
-            >
-              View on Scryfall ↗
-            </a>
-          )}
+          {/* Where to buy another one — or a real copy, if this is a proxy. */}
+          <BuyLinks card={card} compact style={{ marginTop: 8, justifyContent: "center" }} />
 
           {/* wrong card or wrong printing (common after a CSV import) */}
           <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
@@ -249,15 +407,34 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
             </button>
           </div>
         </div>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: "1 1 240px", minWidth: 0 }}>
           <div style={{ fontSize: 13, color: C.parchment, marginBottom: 8, opacity: 0.85 }}>
             {card.setName || card.set}
             {card.rarity ? ` · ${card.rarity}` : ""}
           </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-            <div className="mono" style={{ fontSize: 19, fontWeight: 600, color: C.goldBright }}>
-              {fmt(currentVal)} <span style={{ fontSize: 11.5, color: C.parchmentDim }}>/ each</span>
-            </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+            {card.proxy ? (
+              <div
+                className="mono"
+                style={{
+                  fontSize: 13,
+                  fontWeight: 700,
+                  letterSpacing: 1.6,
+                  color: C.goldBright,
+                  background: C.accentFill,
+                  border: `1px solid ${C.accent}`,
+                  borderRadius: 0,
+                  clipPath: NOTCH_SM,
+                  padding: "5px 11px",
+                }}
+              >
+                PROXY
+              </div>
+            ) : (
+              <div className="mono" style={{ fontSize: 19, fontWeight: 600, color: C.goldBright }}>
+                {fmt(currentVal)} <span style={{ fontSize: 11.5, color: C.parchmentDim }}>/ each</span>
+              </div>
+            )}
             {(
               <button
                 onClick={refreshPrice}
@@ -280,15 +457,28 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
               </button>
             )}
           </div>
-          <div style={{ fontSize: 13, color: C.parchmentDim }}>
-            Allocated cost: <span className="mono" style={{ color: C.parchment }}>{fmt(cost)}</span>
-          </div>
-          <div style={{ fontSize: 13.5, marginTop: 5, fontWeight: 600 }}>
-            <span style={{ color: (currentVal * card.quantity - cost) >= 0 ? C.greenBright : C.redBright }}>
-              {(currentVal * card.quantity - cost) >= 0 ? "+" : "-"}
-              {fmt(Math.abs(currentVal * card.quantity - cost))} total
-            </span>
-          </div>
+          <MarketPrices card={card} />
+          {card.proxy ? (
+            <div style={{ fontSize: 12.5, color: C.parchmentDim, lineHeight: 1.6 }}>
+              Counts as nothing in your totals, and Sets still lists the real card as missing.
+              <div style={{ marginTop: 3 }}>
+                A real copy currently runs{" "}
+                <span className="mono" style={{ color: C.parchment }}>{fmt(currentVal)}</span>.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 13, color: C.parchmentDim }}>
+                Allocated cost: <span className="mono" style={{ color: C.parchment }}>{fmt(cost)}</span>
+              </div>
+              <div style={{ fontSize: 13.5, marginTop: 5, fontWeight: 600 }}>
+                <span style={{ color: (currentVal * card.quantity - cost) >= 0 ? C.greenBright : C.redBright }}>
+                  {(currentVal * card.quantity - cost) >= 0 ? "+" : "-"}
+                  {fmt(Math.abs(currentVal * card.quantity - cost))} total
+                </span>
+              </div>
+            </>
+          )}
 
           <div
             style={{
@@ -324,6 +514,39 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
                   <div style={{ fontStyle: "italic", opacity: 0.7 }}>No rules text on file for this card.</div>
                 )}
               </>
+            )}
+
+            {/* Where this card is allowed to be played. Absent for cards added
+                before legality was stored — they fill in on the next price
+                refresh rather than being guessed at here. */}
+            {card.legalities && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 10 }}>
+                {FORMATS.map((f) => {
+                  const status = legalityOf(card, f.key);
+                  if (!status || status === "not_legal") return null;
+                  const bad = status === "banned";
+                  const warn = status === "restricted";
+                  return (
+                    <span
+                      key={f.key}
+                      className="mono"
+                      title={`${f.label}: ${LEGALITY_LABEL[status]}`}
+                      style={{
+                        fontSize: 9,
+                        letterSpacing: 0.8,
+                        textTransform: "uppercase",
+                        padding: "3px 7px",
+                        clipPath: NOTCH_SM,
+                        color: bad ? C.redBright : warn ? C.goldBright : C.parchmentDim,
+                        border: `1px solid ${bad ? "rgba(222,115,134,0.5)" : warn ? C.accent : C.border}`,
+                      }}
+                    >
+                      {f.label}
+                      {bad ? " · banned" : warn ? " · restricted" : ""}
+                    </span>
+                  );
+                })}
+              </div>
             )}
           </div>
         </div>
@@ -391,17 +614,37 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
           )}
           {fixError && <div style={{ color: C.redBright, fontSize: 12.5 }}>{fixError}</div>}
 
-          {fixResults.length > 0 && (
+          {fixMode === "prints" && fixResults.length > 1 && (
+            <PrintingSortBar
+              sortKey={fixSort}
+              onSortKey={setFixSort}
+              dir={fixDir}
+              onToggleDir={() => setFixDir((d) => (d === "asc" ? "desc" : "asc"))}
+              filterText={fixFilter}
+              onFilterText={setFixFilter}
+            />
+          )}
+
+          {fixMode === "prints" && fixResults.length > 0 && visibleFixResults.length === 0 && (
+            <div style={{ fontSize: 12.5, color: C.parchmentDim }}>No printing's set matches "{fixFilter}".</div>
+          )}
+
+          {visibleFixResults.length > 0 && (
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))",
-                gap: 10,
-                maxHeight: 300,
+                // Big enough to actually read the printed text and compare
+                // borders/frames at a glance, the way picking a printing
+                // works in other deckbuilders — not a strip of thumbnails
+                // you have to zoom each one to tell apart.
+                gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
+                gap: 16,
+                maxHeight: 480,
                 overflowY: "auto",
+                paddingRight: 2,
               }}
             >
-              {fixResults.map((p) => {
+              {visibleFixResults.map((p) => {
                 const current = p.scryfallId === card.scryfallId;
                 return (
                   <div
@@ -414,9 +657,10 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
                       style={{
                         position: "relative",
                         aspectRatio: "5 / 7",
-                        borderRadius: 6,
+                        borderRadius: 8,
                         overflow: "hidden",
                         border: current ? `2px solid ${C.goldBright}` : `1px solid ${C.border}`,
+                        boxShadow: "0 6px 14px -6px rgba(0,0,0,0.7)",
                       }}
                     >
                       <CardArt card={p} />
@@ -425,16 +669,16 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
                           className="mono"
                           style={{
                             position: "absolute",
-                            bottom: 3,
-                            left: 3,
-                            right: 3,
+                            bottom: 5,
+                            left: 5,
+                            right: 5,
                             textAlign: "center",
-                            fontSize: 7.5,
-                            letterSpacing: 0.8,
+                            fontSize: 9,
+                            letterSpacing: 1,
                             background: STOCK_BG,
                             color: C.stockInk,
-                            borderRadius: 2,
-                            padding: "1px 0",
+                            borderRadius: 3,
+                            padding: "2px 0",
                           }}
                         >
                           CURRENT
@@ -444,9 +688,9 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
                     <div
                       className="mono"
                       style={{
-                        fontSize: 8.5,
+                        fontSize: 10.5,
                         color: C.parchmentDim,
-                        marginTop: 4,
+                        marginTop: 6,
                         textTransform: "uppercase",
                         whiteSpace: "nowrap",
                         overflow: "hidden",
@@ -455,8 +699,8 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
                     >
                       {p.set} #{p.collectorNumber}
                     </div>
-                    <div className="mono" style={{ fontSize: 8.5, color: C.gold }}>
-                      {p.usd !== null ? fmt(p.usd) : "—"}
+                    <div className="mono" style={{ fontSize: 10.5, color: C.gold }}>
+                      {fmt(printingPrice(p))}
                     </div>
                   </div>
                 );
@@ -473,7 +717,7 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 12 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         <Field label="Quantity" htmlFor="dm-quantity">
           <input
             id="dm-quantity"
@@ -519,16 +763,127 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
         </Field>
       )}
 
+      {/* The two flags that change what this copy MEANS rather than what it is:
+          a proxy is a placeholder standing in for a card you don't really own,
+          and the wishlist flag is how that placeholder (or a beaten-up real
+          copy) reaches the public wishlist page. */}
+      <Field label="This copy">
+        <label
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            fontSize: 13,
+            color: C.parchment,
+            cursor: "pointer",
+            userSelect: "none",
+            marginBottom: 10,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={proxy}
+            onChange={(e) => setProxy(e.target.checked)}
+            style={{ width: 15, height: 15, marginTop: 2, flexShrink: 0 }}
+          />
+          <span>
+            Proxy
+            <span style={{ display: "block", fontSize: 11.5, color: C.parchmentDim, marginTop: 2 }}>
+              Stays in the collection, but carries no price and no share of the collection's cost.
+              Sets keeps counting the real card as missing; decks can still use it.
+            </span>
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            fontSize: 13,
+            color: C.parchment,
+            cursor: "pointer",
+            userSelect: "none",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={wanted}
+            onChange={(e) => setWanted(e.target.checked)}
+            style={{ width: 15, height: 15, marginTop: 2, flexShrink: 0 }}
+          />
+          <span>
+            <Heart size={12} style={{ verticalAlign: "-1px", marginRight: 4, color: C.accent }} />
+            Want a real copy
+            <span style={{ display: "block", fontSize: 11.5, color: C.parchmentDim, marginTop: 2 }}>
+              Shows on your wishlist, including the public page anyone can open.
+            </span>
+          </span>
+        </label>
+        {wanted && (
+          <input
+            style={{ ...inputStyle, marginTop: 8 }}
+            value={wantNote}
+            onChange={(e) => setWantNote(e.target.value)}
+            placeholder="Note for whoever reads the wishlist — e.g. any printing, foil preferred"
+            aria-label="Wishlist note"
+          />
+        )}
+
+        {/* The other half of a wishlist: what you'd give for one. */}
+        <label
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            fontSize: 13,
+            color: C.parchment,
+            cursor: "pointer",
+            userSelect: "none",
+            marginTop: 10,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={forTrade}
+            onChange={(e) => setForTrade(e.target.checked)}
+            style={{ width: 15, height: 15, marginTop: 2, flexShrink: 0 }}
+          />
+          <span>
+            <Repeat size={12} style={{ verticalAlign: "-1px", marginRight: 4, color: C.accent }} />
+            Up for trade
+            <span style={{ display: "block", fontSize: 11.5, color: C.parchmentDim, marginTop: 2 }}>
+              Keeps the card exactly where it is, and puts it on your trade list — which your
+              playgroup can match against what they're after, if you share it.
+            </span>
+          </span>
+        </label>
+        {forTrade && (
+          <input
+            style={{ ...inputStyle, marginTop: 8 }}
+            value={tradeNote}
+            onChange={(e) => setTradeNote(e.target.value)}
+            placeholder="Optional note for your trade list — e.g. only for Commander staples, slight whitening"
+            aria-label="Trade note"
+            maxLength={200}
+          />
+        )}
+      </Field>
+
       <Field label="Collection" htmlFor="dm-collection">
         <select id="dm-collection" style={inputStyle} value={collectionId} onChange={(e) => setCollectionId(e.target.value)}>
           <option value={UNCATEGORIZED}>Uncategorized</option>
-          {collections.map((c) => (
+          {collectionOptions(collections).map((c) => (
             <option key={c.id} value={c.id}>
-              {c.name}
+              {c.label}
             </option>
           ))}
         </select>
       </Field>
+
+      {/* Your own labels for this card. Searchable with tag: in the box. */}
+      <div style={{ marginBottom: 14 }}>
+        <TagEditor tags={tags} suggestions={tagSuggestions || []} onChange={setTags} />
+      </div>
 
       <Field label="Physical location" htmlFor="dm-location">
         <input
@@ -594,7 +949,7 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 12 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         <Field label="Purchase price override" htmlFor="dm-cost-override">
           <MoneyInput id="dm-cost-override" valueUsd={costOverride} onChange={setCostOverride} placeholder="auto-split" />
         </Field>
@@ -620,10 +975,16 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
           }}
         >
           <div style={{ color: C.parchment, fontWeight: 600, marginBottom: 3 }}>
-            Sold {card.soldDate ? `on ${card.soldDate}` : ""}
+            {card.tradedFor ? "Traded" : "Sold"} {card.soldDate ? `on ${card.soldDate}` : ""}
           </div>
+          {card.tradedFor && (
+            <div style={{ color: C.parchmentDim, marginBottom: 3 }}>
+              For: <span style={{ color: C.parchment }}>{card.tradedFor}</span>
+            </div>
+          )}
           <div className="mono" style={{ color: C.parchmentDim }}>
-            {fmt((card.soldPrice || 0) * (card.quantity || 1))} received ·{" "}
+            {fmt((card.soldPrice || 0) * (card.quantity || 1))}{" "}
+            {card.tradedFor ? "value received" : "received"} ·{" "}
             <span
               style={{
                 color:
@@ -654,28 +1015,28 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-        <button
-          onClick={save}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 10 }}>
+        <div
+          className="mono"
+          aria-live="polite"
           style={{
-            flex: 1,
-            background: STOCK_BG,
-            color: C.stockInk,
-            border: "none",
-            borderRadius: 6,
-            padding: "10px",
-            fontWeight: 700,
-            fontSize: 13,
-            cursor: "pointer",
+            flex: "1 1 100%",
+            fontSize: 10.5,
+            letterSpacing: 0.8,
+            textTransform: "uppercase",
+            color: savedFlash ? C.greenBright : C.parchmentDim,
+            opacity: savedFlash ? 1 : 0.7,
+            textAlign: "center",
           }}
         >
-          Save changes
-        </button>
+          {savedFlash ? "Saved" : "Changes save automatically"}
+        </div>
         {!card.sold && (
           <button
             onClick={() => onDuplicate(card)}
             title="Add another copy of this exact printing — handy for a foil or another pull of the same card"
             style={{
+              flex: "1 1 auto",
               background: "none",
               border: `1px solid ${C.border}`,
               color: C.parchmentDim,
@@ -695,6 +1056,7 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
           <button
             onClick={onSell}
             style={{
+              flex: "1 1 auto",
               background: "none",
               border: `1px solid ${C.gold}`,
               color: C.goldBright,
@@ -708,6 +1070,27 @@ export function DetailModal({ card, collections, decks, onAddToDeck, cost, onClo
           >
             <Tag size={14} style={{ verticalAlign: "-2px", marginRight: 5 }} />
             Sell
+          </button>
+        )}
+        {!card.sold && (
+          <button
+            onClick={onTrade}
+            title="Card for card — traded away for something else, not cash"
+            style={{
+              flex: "1 1 auto",
+              background: "none",
+              border: `1px solid ${C.gold}`,
+              color: C.goldBright,
+              borderRadius: 6,
+              padding: "10px 14px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <Repeat size={14} style={{ verticalAlign: "-2px", marginRight: 5 }} />
+            Trade
           </button>
         )}
         {!confirmDelete ? (

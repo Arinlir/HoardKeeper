@@ -11,7 +11,6 @@ globalThis.localStorage = dom.window.localStorage;
 globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-localStorage.setItem("lf-profile", JSON.stringify({ name: "michael", pin: "" }));
 
 const cards = [
   { id: "s1", name: "Sol Ring", set: "ltc", collectorNumber: "59", scryfallId: "sol-ring-1", quantity: 1, usd: 2, colors: [], rarity: "uncommon", typeLine: "Artifact", collectionId: "uncategorized", isArt: false, added: 1 },
@@ -19,8 +18,9 @@ const cards = [
 ];
 globalThis.fetch = (url, opts) => {
   const u = String(url);
-  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "pin" }) });
-  if (u.includes("/api/store/michael"))
+  if (u.includes("/api/auth/me")) return Promise.resolve({ ok: true, json: async () => ({ user: { id: 1, email: "michael@example.com", verified: true, handle: "michael" } }) });
+  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "accounts" }) });
+  if (u.includes("/api/store"))
     return Promise.resolve({ ok: true, json: async () => ({ value: JSON.stringify({ collections: [], cards }) }) });
   if (u.includes("api.scryfall.com/cards/collection")) {
     const body = JSON.parse(opts.body);

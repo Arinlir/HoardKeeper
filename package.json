@@ -1,25 +1,40 @@
 {
-  "name": "hoardkeeper",
+  "name": "binderwyrm",
   "private": true,
   "license": "MIT",
   "version": "1.0.0",
   "type": "module",
-  "description": "Self-hosted MTG collection tracker: live Scryfall pricing, cost-basis tracking, set completion, deck drafting, shared profiles. AI-written (Claude), human-directed.",
+  "description": "Binderwyrm (formerly HoardKeeper) — self-hosted MTG collection tracker: live Scryfall pricing, cost-basis tracking, set completion, deck drafting, shared profiles. AI-written (Claude), human-directed.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "start": "node server.cjs",
     "preview": "vite preview",
-    "test": "node scripts/run-tests.mjs"
+    "test": "node scripts/run-tests.mjs",
+    "cap:sync": "vite build && cap sync",
+    "android": "npm run cap:sync && cap open android",
+    "ios": "npm run cap:sync && cap open ios"
   },
   "dependencies": {
+    "@binderwyrm/live-scanner": "file:native/live-scanner",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.2",
+    "@fontsource/archivo": "^5.3.0",
+    "@fontsource/cinzel": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/spectral": "^5.3.0",
     "lucide-react": "^0.383.0",
     "papaparse": "^5.4.1",
+    "qrcode-generator": "^2.0.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "recharts": "^2.12.7"
+    "recharts": "^2.12.7",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/ios": "^8.5.2",
     "@vitejs/plugin-react": "^4.3.1",
     "jsdom": "^30.0.1",
     "vite": "^5.3.4"

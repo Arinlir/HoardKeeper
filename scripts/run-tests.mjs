@@ -46,7 +46,11 @@ for (const file of files) {
       bundle: true,
       format: "esm",
       loader: { ".jsx": "jsx" },
-      external: ["jsdom"],
+      // jsdom resolves through the normal node_modules walk-up, and node's own
+      // builtins stay as imports for node to resolve at runtime — esbuild's
+      // default (browser) platform can't bundle them, and a test that reads the
+      // repo's own files (docker-packaging-test) needs node:fs.
+      external: ["jsdom", "node:*"],
       absWorkingDir: rootDir,
       logLevel: "silent",
     });

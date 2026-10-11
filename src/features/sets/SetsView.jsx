@@ -1,16 +1,28 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { ChevronLeft, ChevronRight, Loader2, Palette } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Heart, Loader2, Palette } from "lucide-react";
 import { Stepper } from "../../components/ui/Stepper";
-import { UNCATEGORIZED, sleep } from "../../lib/scryfall";
+import { UNCATEGORIZED, printingPrice, sleep } from "../../lib/scryfall";
 import { C, CONSOLE } from "../../lib/tokens";
 import { CardArt } from "../collection/CardTile";
 import { ArtCardsView } from "./ArtCardsView";
 import { CompletionCost } from "./CompletionCost";
-import { RARITY_FILL, RARITY_ORDER, fetchSetInfo, fetchSetRoster, groupRosterByName } from "./rosterUtils";
+import { RARITY_FILL, RARITY_ORDER, ROSTER_SORTS, fetchSetInfo, fetchSetRoster, groupRosterByName, sortRosterGroups } from "./rosterUtils";
+import { collectionOptions } from "../../lib/collectionTree";
 
-export function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
+export function SetsView({ cards, collections, wishlist, onAddCopy, onRemoveCopy, onToggleWishlist }) {
   const [subView, setSubView] = useState("owned"); // "owned" | "art"
-  const owned = useMemo(() => cards.filter((c) => !c.sold && c.set), [cards]);
+  // Proxies are deliberately NOT owned as far as set completion goes — a
+  // placeholder you printed shouldn't fill a slot or shrink the cost to
+  // complete the set, since replacing it with the real card is exactly the
+  // thing this view is meant to tell you about.
+  const owned = useMemo(() => cards.filter((c) => !c.sold && !c.proxy && c.set), [cards]);
+  // Roster entries carry a Scryfall id, and so do the wishlist entries made
+  // from them, so "already wanted" is one set lookup rather than a scan.
+  const wishlistIds = useMemo(
+    () => new Set((wishlist || []).map((w) => w.scryfallId).filter(Boolean)),
+    [wishlist]
+  );
+  const isWanted = (entry) => !!entry?.scryfallId && wishlistIds.has(entry.scryfallId);
 
   // group owned cards by set code
   const ownedBySet = useMemo(() => {
@@ -29,6 +41,19 @@ export function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
   const [rosterLoading, setRosterLoading] = useState(false);
   const [rosterError, setRosterError] = useState("");
   const [rosterSearch, setRosterSearch] = useState("");
+  // How the roster grid is ordered. Remembered across sets and visits (per
+  // browser) — if you like browsing by colour, every set should open that way.
+  const [rosterSort, setRosterSortState] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("lf-roster-sort"));
+      if (saved && ROSTER_SORTS.some((s) => s.key === saved.key) && (saved.dir === "asc" || saved.dir === "desc")) return saved;
+    } catch (e) {}
+    return { key: "number", dir: "asc" };
+  });
+  function setRosterSort(next) {
+    setRosterSortState(next);
+    try { localStorage.setItem("lf-roster-sort", JSON.stringify(next)); } catch (e) {}
+  }
   const [targetCollection, setTargetCollection] = useState(UNCATEGORIZED);
   const [flashKey, setFlashKey] = useState(null);
 
@@ -102,6 +127,12 @@ export function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
   const groupedRoster = useMemo(
     () => (roster ? groupRosterByName(roster, ownedCount) : null),
     [roster, ownedIndex]
+  );
+  // The grid's order. Rarity bars and completion cost keep using the
+  // unsorted groupedRoster — they don't care about order.
+  const sortedRoster = useMemo(
+    () => (groupedRoster ? sortRosterGroups(groupedRoster, rosterSort.key, rosterSort.dir, printingPrice) : null),
+    [groupedRoster, rosterSort]
   );
 
   // Click-through preview: a large view of one card, with prev/next paging
@@ -385,6 +416,61 @@ export function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
                           }}
                         />
 
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <label
+                            className="mono"
+                            style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 10, letterSpacing: 0.5, textTransform: "uppercase", color: CONSOLE.dim }}
+                          >
+                            Sort
+                            <select
+                              value={rosterSort.key}
+                              onChange={(e) => {
+                                const def = ROSTER_SORTS.find((s) => s.key === e.target.value);
+                                setRosterSort({ key: def.key, dir: def.dir });
+                              }}
+                              aria-label="Sort roster by"
+                              className="mono"
+                              style={{
+                                background: CONSOLE.panel,
+                                border: `1px solid ${CONSOLE.line2}`,
+                                borderRadius: 2,
+                                padding: "5px 8px",
+                                color: CONSOLE.bright,
+                                fontSize: 11.5,
+                                textTransform: "none",
+                                letterSpacing: 0,
+                              }}
+                            >
+                              {ROSTER_SORTS.map((s) => (
+                                <option key={s.key} value={s.key}>
+                                  {s.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <button
+                            onClick={() => setRosterSort({ ...rosterSort, dir: rosterSort.dir === "asc" ? "desc" : "asc" })}
+                            aria-label={rosterSort.dir === "asc" ? "Roster sorted ascending" : "Roster sorted descending"}
+                            title={rosterSort.dir === "asc" ? "Ascending — click to reverse" : "Descending — click to reverse"}
+                            className="mono"
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 4,
+                              background: CONSOLE.panel,
+                              border: `1px solid ${CONSOLE.line2}`,
+                              borderRadius: 2,
+                              color: CONSOLE.dim,
+                              fontSize: 10.5,
+                              padding: "6px 8px",
+                              cursor: "pointer",
+                            }}
+                          >
+                            {rosterSort.dir === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
+                            {rosterSort.dir === "asc" ? "Asc" : "Desc"}
+                          </button>
+                        </div>
+
                         <label
                           className="mono"
                           style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 10, letterSpacing: 0.5, textTransform: "uppercase", color: CONSOLE.dim }}
@@ -406,9 +492,9 @@ export function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
                             }}
                           >
                             <option value={UNCATEGORIZED}>Uncategorized</option>
-                            {collections.map((c) => (
+                            {collectionOptions(collections).map((c) => (
                               <option key={c.id} value={c.id}>
-                                {c.name}
+                                {c.label}
                               </option>
                             ))}
                           </select>
@@ -426,7 +512,7 @@ export function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
                           gap: 16,
                         }}
                       >
-                        {groupedRoster
+                        {sortedRoster
                           .filter((g) => !rosterSearch || g.name.toLowerCase().includes(rosterSearch.toLowerCase()))
                           .map((g) => {
                             const key = g.display.scryfallId || `${g.display.set}-${g.display.collectorNumber}`;
@@ -453,6 +539,35 @@ export function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
                                   }}
                                 >
                                   <CardArt card={g.display} />
+                                  {onToggleWishlist && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onToggleWishlist(g.display);
+                                      }}
+                                      title={isWanted(g.display) ? "On your wishlist — click to remove" : "Add to wishlist"}
+                                      aria-label={`${isWanted(g.display) ? "Remove" : "Add"} ${g.name} ${isWanted(g.display) ? "from" : "to"} your wishlist`}
+                                      aria-pressed={isWanted(g.display)}
+                                      style={{
+                                        position: "absolute",
+                                        top: 5,
+                                        left: 5,
+                                        display: "flex",
+                                        padding: 3,
+                                        background: CONSOLE.panel,
+                                        border: `1px solid ${isWanted(g.display) ? CONSOLE.accent : CONSOLE.line2}`,
+                                        borderRadius: 2,
+                                        cursor: "pointer",
+                                        boxShadow: "0 1px 3px rgba(0,0,0,0.5)",
+                                      }}
+                                    >
+                                      <Heart
+                                        size={11}
+                                        color={isWanted(g.display) ? CONSOLE.accent : CONSOLE.dim}
+                                        fill={isWanted(g.display) ? CONSOLE.accent : "none"}
+                                      />
+                                    </button>
+                                  )}
                                   {g.totalOwned > 1 && (
                                     <div
                                       className="mono"
@@ -593,7 +708,7 @@ export function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
                       filter: isOwnedPrinting ? "none" : "grayscale(0.7)",
                     }}
                   >
-                    <CardArt card={printing} large />
+                    <CardArt card={printing} large flippable />
                   </div>
                   {many && (
                     <button
@@ -623,6 +738,29 @@ export function SetsView({ cards, collections, onAddCopy, onRemoveCopy }) {
                     onMinus={() => onRemoveCopy(printing)}
                     onPlus={() => onAddCopy(printing, targetCollection)}
                   />
+                  {onToggleWishlist && (
+                    <button
+                      onClick={() => onToggleWishlist(printing)}
+                      className="mono"
+                      aria-pressed={isWanted(printing)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        background: isWanted(printing) ? C.accentFill : "none",
+                        border: `1px solid ${isWanted(printing) ? CONSOLE.accent : CONSOLE.line2}`,
+                        color: isWanted(printing) ? C.goldBright : CONSOLE.dim,
+                        borderRadius: 2,
+                        padding: "8px 14px",
+                        fontSize: 12.5,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      <Heart size={13} fill={isWanted(printing) ? C.goldBright : "none"} />
+                      {isWanted(printing) ? "On wishlist" : "Wishlist"}
+                    </button>
+                  )}
                   <button
                     onClick={() => setPreviewGroup(null)}
                     className="mono"

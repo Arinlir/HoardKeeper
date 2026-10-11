@@ -10,7 +10,6 @@ globalThis.localStorage = dom.window.localStorage;
 globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-localStorage.setItem("lf-profile", JSON.stringify({ name: "michael", pin: "" }));
 
 const ezioText =
   "Assassin spells you cast have freerunning {B}{B}. (You may cast a spell for its freerunning cost if you dealt combat damage to a player this turn with an Assassin or commander.)\nWhenever Ezio deals combat damage to a player, you may pay {W}{U}{B}{R}{G} if that player has 10 or less life. When you do, that player loses the game.";
@@ -20,8 +19,9 @@ const cards = [
 ];
 globalThis.fetch = (url, opts) => {
   const u = String(url);
-  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "pin" }) });
-  if (u.includes("/api/store/michael"))
+  if (u.includes("/api/auth/me")) return Promise.resolve({ ok: true, json: async () => ({ user: { id: 1, email: "michael@example.com", verified: true, handle: "michael" } }) });
+  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "accounts" }) });
+  if (u.includes("/api/store"))
     return Promise.resolve({ ok: true, json: async () => ({ value: JSON.stringify({ collections: [], cards }) }) });
   if (u.includes("api.scryfall.com/cards/collection")) {
     const body = JSON.parse(opts.body);

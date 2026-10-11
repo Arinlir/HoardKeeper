@@ -1,0 +1,29 @@
+{
+  "name": "@binderwyrm/live-scanner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Binderwyrm's live card scanner: a camera preview behind the app's page, with on-device text recognition (Google ML Kit on Android, Apple Vision on iOS).",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "module": "index.js",
+  "files": [
+    "index.js",
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "BinderwyrmLiveScanner.podspec"
+  ],
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    },
+    "android": {
+      "src": "android"
+    }
+  }
+}

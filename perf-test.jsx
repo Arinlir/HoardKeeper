@@ -40,15 +40,16 @@ const cards = Array.from({ length: CARD_COUNT }, (_, i) => ({
 
 globalThis.fetch = (url) => {
   const u = String(url);
-  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "pin" }) });
+  if (u.includes("/api/auth/me")) return Promise.resolve({ ok: true, json: async () => ({ user: { id: 1, email: "michael@example.com", verified: true, handle: "michael" } }) });
+  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "accounts" }) });
   return Promise.resolve({ ok: false, json: async () => ({}) });
 };
-localStorage.setItem("lf-profile", JSON.stringify({ name: "test", pin: "" }));
-// store.get("ledger-foil-data") hits /api/store/test — serve it directly.
+// store.get("ledger-foil-data") hits /api/store — serve it directly.
 globalThis.fetch = (url) => {
   const u = String(url);
-  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "pin" }) });
-  if (u.includes("/api/store/test")) {
+  if (u.includes("/api/auth/me")) return Promise.resolve({ ok: true, json: async () => ({ user: { id: 1, email: "michael@example.com", verified: true, handle: "michael" } }) });
+  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "accounts" }) });
+  if (u.includes("/api/store")) {
     return Promise.resolve({
       ok: true,
       json: async () => ({ value: JSON.stringify({ collections, cards }) }),

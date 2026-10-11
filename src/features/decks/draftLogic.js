@@ -67,16 +67,20 @@ export function allowsAnyNumber(card, oracleText) {
 
 // `freeCopies(card)` reports how many copies aren't already committed to another
 // deck. Defaults to "everything is available" so the function stays testable.
-export function draftDeck(commander, pool, oracle, freeCopies = () => Infinity) {
-  const identity = commander.colors || [];
-  const cText = oracle[commander.scryfallId]?.t || "";
-  const cTypes = commander.typeLine || "";
+// `partner` is the optional second commander: its colours widen the identity,
+// its text joins the synergy read, and it takes one of the 100 slots.
+export function draftDeck(commander, pool, oracle, freeCopies = () => Infinity, partner = null) {
+  const zone = [commander, partner].filter(Boolean);
+  const identity = ["W", "U", "B", "R", "G"].filter((x) => zone.some((c) => (c.colors || []).includes(x)));
+  const cText = zone.map((c) => oracle[c.scryfallId]?.t || "").join("\n");
+  const cTypes = zone.map((c) => c.typeLine || "").join(" ");
+  const zoneIds = new Set(zone.map((c) => c.id));
 
   const candidates = pool
     .filter(
       (c) =>
         !c.sold &&
-        c.id !== commander.id &&
+        !zoneIds.has(c.id) &&
         c.scryfallId &&
         identityFits(c, identity) &&
         // don't draft a card that's already sleeved in another deck
@@ -92,7 +96,7 @@ export function draftDeck(commander, pool, oracle, freeCopies = () => Infinity) 
     });
 
   // singleton by name, except basics and "any number" cards
-  const seen = new Set([commander.name]);
+  const seen = new Set(zone.map((c) => c.name));
   const unique = [];
   candidates
     .sort((a, b) => b.syn - a.syn)
@@ -130,7 +134,7 @@ export function draftDeck(commander, pool, oracle, freeCopies = () => Infinity) 
 
   // basics fill the rest of the mana base
   const basicsNeeded = Math.max(0, ROLE_TARGETS.land - landsFound);
-  const spellSlots = 99 - landsFound - basicsNeeded - picks.filter((p) => p.role !== "land").length;
+  const spellSlots = 100 - zone.length - landsFound - basicsNeeded - picks.filter((p) => p.role !== "land").length;
 
   // remaining slots: best synergy, curve-weighted
   const rest = unique

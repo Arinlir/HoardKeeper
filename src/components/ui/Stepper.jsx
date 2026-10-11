@@ -16,6 +16,7 @@ export function Stepper({ n, onMinus, onPlus }) {
   };
   return (
     <div
+      className="stepper"
       style={{
         display: "flex",
         alignItems: "center",
@@ -25,10 +26,12 @@ export function Stepper({ n, onMinus, onPlus }) {
         boxShadow: STOCK_SHADOW,
         overflow: "hidden",
         width: 96,
-        height: 29,
+        height: 32,
+        flexShrink: 0,
       }}
     >
       <button
+        className="stepper-btn"
         aria-label="Decrease quantity"
         style={{ ...btn, color: n === 0 ? "#B5B8B3" : C.stockInk, cursor: n === 0 ? "default" : "pointer" }}
         disabled={n === 0}
@@ -37,7 +40,7 @@ export function Stepper({ n, onMinus, onPlus }) {
         −
       </button>
       <span
-        className="mono"
+        className="mono stepper-count"
         aria-live="polite"
         style={{
           fontSize: 13,
@@ -51,11 +54,12 @@ export function Stepper({ n, onMinus, onPlus }) {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
+          flexShrink: 0,
         }}
       >
         {n}
       </span>
-      <button aria-label="Increase quantity" style={btn} onClick={onPlus}>
+      <button className="stepper-btn" aria-label="Increase quantity" style={btn} onClick={onPlus}>
         +
       </button>
     </div>

@@ -1,0 +1,17 @@
+{
+  "appId": "eu.arinvault.binderwyrm",
+  "appName": "Binderwyrm",
+  "webDir": "dist",
+  "backgroundColor": "#15171B",
+  "android": {
+    "backgroundColor": "#15171B"
+  },
+  "ios": {
+    "backgroundColor": "#15171B"
+  },
+  "plugins": {
+    "SystemBars": {
+      "style": "DARK"
+    }
+  }
+}

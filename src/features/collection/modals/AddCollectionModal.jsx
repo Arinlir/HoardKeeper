@@ -3,9 +3,12 @@ import { Field, inputStyle } from "../../../components/ui/Field";
 import { ModalShell } from "../../../components/ui/ModalShell";
 import { MoneyInput } from "../../../components/ui/MoneyInput";
 import { C, STOCK_BG } from "../../../lib/tokens";
+import { possibleParents } from "../../../lib/collectionTree";
 
-export function AddCollectionModal({ onClose, onAdd }) {
+export function AddCollectionModal({ collections = [], defaultParentId, onClose, onAdd }) {
+  const parents = possibleParents(collections, null);
   const [name, setName] = useState("");
+  const [parentId, setParentId] = useState(parents.some((p) => p.id === defaultParentId) ? defaultParentId : "");
   const [price, setPrice] = useState(null);
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [note, setNote] = useState("");
@@ -21,6 +24,20 @@ export function AddCollectionModal({ onClose, onAdd }) {
           placeholder="e.g. Commander Deck — Dina"
         />
       </Field>
+      {/* One level deep: a sub-collection goes inside a top-level one, and the
+          parent's totals add up everything inside it. */}
+      {parents.length > 0 && (
+        <Field label="Inside" htmlFor="ac-parent">
+          <select id="ac-parent" style={inputStyle} value={parentId} onChange={(e) => setParentId(e.target.value)}>
+            <option value="">— Top level —</option>
+            {parents.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       <Field label="Total purchase price" htmlFor="ac-price">
         <MoneyInput id="ac-price" valueUsd={price} onChange={setPrice} />
       </Field>
@@ -33,7 +50,7 @@ export function AddCollectionModal({ onClose, onAdd }) {
       <button
         onClick={() => {
           if (!name.trim()) return;
-          onAdd({ name: name.trim(), purchasePrice: price || 0, purchaseDate: date, note });
+          onAdd({ name: name.trim(), purchasePrice: price || 0, purchaseDate: date, note, ...(parentId ? { parentId } : {}) });
         }}
         style={{
           width: "100%",

@@ -13,7 +13,6 @@ globalThis.localStorage = dom.window.localStorage;
 globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-localStorage.setItem("lf-profile", JSON.stringify({ name: "michael", pin: "" }));
 
 // own only the showcase printing of Capitoline Triad; own nothing of Murder
 const cards = [
@@ -22,12 +21,13 @@ const cards = [
 let putCalls = [];
 globalThis.fetch = (url, opts) => {
   const u = String(url);
-  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "pin" }) });
-  if (u.includes("/api/store/michael") && opts?.method === "PUT") {
+  if (u.includes("/api/auth/me")) return Promise.resolve({ ok: true, json: async () => ({ user: { id: 1, email: "michael@example.com", verified: true, handle: "michael" } }) });
+  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "accounts" }) });
+  if (u.includes("/api/store") && opts?.method === "PUT") {
     putCalls.push(JSON.parse(opts.body));
     return Promise.resolve({ ok: true, json: async () => ({ ok: true }) });
   }
-  if (u.includes("/api/store/michael"))
+  if (u.includes("/api/store"))
     return Promise.resolve({ ok: true, json: async () => ({ value: JSON.stringify({ collections: [], cards }) }) });
   if (u.includes("api.scryfall.com/sets/"))
     return Promise.resolve({ ok: true, json: async () => ({ name: "Assassin's Creed", code: "acr", card_count: 4, released_at: "2024-01-01" }) });

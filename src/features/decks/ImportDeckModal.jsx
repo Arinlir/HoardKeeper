@@ -2,8 +2,11 @@ import React, { useState } from "react";
 import { Check } from "lucide-react";
 import { Field } from "../../components/ui/Field";
 import { ModalShell } from "../../components/ui/ModalShell";
+import { normalizeCard, scryfallCollection } from "../../lib/scryfall";
 import { C, STOCK_BG, STOCK_SHADOW } from "../../lib/tokens";
+import { importCategoryDeclarations, importCategoryFor, isCustomCategory } from "./categories";
 import { jsonToParsed, matchDecklist, parseDecklist } from "./deckIO";
+import { makeExternalCard } from "./externals";
 
 export function ImportDeckModal({ cards, committed, onClose, onImport }) {
   const [text, setText] = useState("");
@@ -11,6 +14,11 @@ export function ImportDeckModal({ cards, committed, onClose, onImport }) {
   const [preview, setPreview] = useState(null);
   const [meta, setMeta] = useState(null);
   const [error, setError] = useState("");
+  // Cards the list asks for that your collection can't supply. They used to be
+  // dropped on the floor with a note; now they can come in as cards to buy, so
+  // importing someone's list gives you the deck AND the shopping list.
+  const [includeMissing, setIncludeMissing] = useState(true);
+  const [busy, setBusy] = useState(false);
 
   function analyse(source, fileName) {
     setError("");
@@ -57,11 +65,13 @@ export function ImportDeckModal({ cards, committed, onClose, onImport }) {
   const totalWanted =
     preview?.parsed.entries.reduce((n, e) => n + e.qty, 0) +
     Object.values(preview?.parsed.basics || {}).reduce((n, v) => n + v, 0) +
-    (preview?.parsed.commander ? 1 : 0);
+    (preview?.parsed.commander ? 1 : 0) +
+    (preview?.parsed.partner ? 1 : 0);
   const totalMatched =
     (preview?.entries.reduce((n, e) => n + e.qty, 0) || 0) +
     Object.values(preview?.basics || {}).reduce((n, v) => n + v, 0) +
-    (preview?.commanderId ? 1 : 0);
+    (preview?.commanderId ? 1 : 0) +
+    (preview?.partnerId ? 1 : 0);
 
   const inputS = {
     width: "100%",
@@ -73,11 +83,54 @@ export function ImportDeckModal({ cards, committed, onClose, onImport }) {
     fontSize: 13,
   };
 
+  // Every copy the list wants that the collection couldn't cover: cards you own
+  // none of, plus the remainder of the ones you only partly own. The commander
+  // is left out — a deck is built around one you actually have.
+  const shortfall = preview
+    ? [
+        ...preview.missing.filter((m) => !m.isCommander).map((m) => ({ ...m, need: m.qty })),
+        ...preview.partial.map((p) => ({ ...p, need: Math.max(0, p.qty - p.have) })),
+      ].filter((r) => r.need > 0)
+    : [];
+
+  async function buildExternals() {
+    if (shortfall.length === 0) return { external: [], entries: [], unresolved: [] };
+    const ids = shortfall.map((r) =>
+      r.set && r.num ? { set: r.set.toLowerCase(), collector_number: String(r.num) } : { name: r.name }
+    );
+    const found = [];
+    // Scryfall takes 75 identifiers at a time.
+    for (let i = 0; i < ids.length; i += 75) {
+      const data = await scryfallCollection(ids.slice(i, i + 75));
+      (data.data || []).forEach((raw) => found.push(normalizeCard(raw)));
+    }
+    const byName = {};
+    found.forEach((c) => {
+      const k = c.name.toLowerCase();
+      if (!byName[k]) byName[k] = c;
+      const front = c.name.split("//")[0].trim().toLowerCase();
+      if (!byName[front]) byName[front] = c;
+    });
+    const external = [];
+    const entries = [];
+    const unresolved = [];
+    shortfall.forEach((r) => {
+      const printing = byName[r.name.toLowerCase()];
+      if (!printing) return unresolved.push(r);
+      const card = makeExternalCard(printing);
+      external.push(card);
+      // Same rule as matched cards: a preserved role from a JSON re-import
+      // wins, otherwise split by card type instead of dumping into "other".
+      entries.push({ cardId: card.id, qty: r.need, role: r.role || importCategoryFor(printing.typeLine) });
+    });
+    return { external, entries, unresolved };
+  }
+
   return (
     <ModalShell title="Import a deck" onClose={onClose} width={620}>
       <p style={{ fontSize: 12.5, color: C.parchmentDim, marginTop: 0, lineHeight: 1.6 }}>
         Paste a decklist from Moxfield, Archidekt, Arena or anywhere else — or load a{" "}
-        <span className="mono">.txt</span> / HoardKeeper <span className="mono">.json</span> file.
+        <span className="mono">.txt</span> / Binderwyrm <span className="mono">.json</span> file.
         Cards are matched against what you own; anything missing is listed rather than invented.
       </p>
 
@@ -144,13 +197,21 @@ export function ImportDeckModal({ cards, committed, onClose, onImport }) {
             }}
           >
             {totalMatched} of {totalWanted} cards matched from your collection
-            {preview.commanderId ? " · commander found" : preview.parsed.commander ? " · commander missing" : ""}
+            {preview.commanderId
+              ? preview.partnerId
+                ? " · both commanders found"
+                : preview.parsed.partner
+                ? " · second commander missing"
+                : " · commander found"
+              : preview.parsed.commander
+              ? " · commander missing"
+              : ""}
           </div>
 
           {(preview.missing.length > 0 || preview.partial.length > 0) && (
             <div
               style={{
-                border: `1px solid rgba(222,115,134,0.35)`,
+                border: `1px solid ${includeMissing ? "rgba(111,166,209,0.45)" : "rgba(222,115,134,0.35)"}`,
                 borderRadius: 8,
                 padding: "10px 12px",
                 marginBottom: 12,
@@ -160,9 +221,9 @@ export function ImportDeckModal({ cards, committed, onClose, onImport }) {
             >
               <div
                 className="mono"
-                style={{ fontSize: 9.5, letterSpacing: 1.2, textTransform: "uppercase", color: C.redBright, marginBottom: 6 }}
+                style={{ fontSize: 9.5, letterSpacing: 1.2, textTransform: "uppercase", color: includeMissing ? C.accent : C.redBright, marginBottom: 6 }}
               >
-                Not added — you don't own these (or they're in another deck)
+                {includeMissing ? "You don't own these — they'll come in as cards to buy" : "Not added — you don't own these (or they're in another deck)"}
               </div>
               {preview.missing.map((m, i) => (
                 <div key={`m${i}`} className="mono" style={{ fontSize: 11, color: C.parchmentDim, padding: "1px 0" }}>
@@ -178,16 +239,68 @@ export function ImportDeckModal({ cards, committed, onClose, onImport }) {
             </div>
           )}
 
+          {shortfall.length > 0 && (
+            <label
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 8,
+                fontSize: 12.5,
+                color: C.parchment,
+                cursor: "pointer",
+                userSelect: "none",
+                marginBottom: 12,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={includeMissing}
+                onChange={(e) => setIncludeMissing(e.target.checked)}
+                style={{ width: 15, height: 15, marginTop: 2, flexShrink: 0 }}
+              />
+              <span>
+                Bring in the {shortfall.reduce((n, r) => n + r.need, 0)} card
+                {shortfall.reduce((n, r) => n + r.need, 0) === 1 ? "" : "s"} you don't own as cards to
+                buy
+                <span style={{ display: "block", fontSize: 11.5, color: C.parchmentDim, marginTop: 2 }}>
+                  The deck comes in whole, with those marked as ones to buy — priced, and one click
+                  from your wishlist. Untick and they're left out, as before.
+                </span>
+              </span>
+            </label>
+          )}
+
           {preview.parsed.sideboard?.length > 0 && (
             <div className="mono" style={{ fontSize: 10.5, color: C.parchmentDim, marginBottom: 10 }}>
               {preview.parsed.sideboard.length} sideboard line
-              {preview.parsed.sideboard.length === 1 ? "" : "s"} ignored — HoardKeeper decks don't
+              {preview.parsed.sideboard.length === 1 ? "" : "s"} ignored — Binderwyrm decks don't
               track sideboards.
             </div>
           )}
 
           <button
-            onClick={() =>
+            onClick={async () => {
+              setBusy(true);
+              setError("");
+              let extra = { external: [], entries: [], unresolved: [] };
+              try {
+                if (includeMissing) extra = await buildExternals();
+              } catch (e) {
+                setError("Couldn't reach Scryfall to look up the cards you don't own — importing the rest.");
+              }
+              setBusy(false);
+              const allEntries = [...preview.entries, ...extra.entries];
+              // Declare labels for whichever type-based groups this import
+              // actually used (Artifacts, Instants, ...), without clobbering
+              // categories a JSON re-import already named for itself.
+              const existingCats = meta?.categories || [];
+              const existingKeys = new Set(existingCats.map((c) => c.key));
+              const usedCustomKeys = new Set(
+                allEntries.map((e) => e.role).filter((k) => isCustomCategory(k))
+              );
+              const newCats = importCategoryDeclarations(usedCustomKeys).filter(
+                (c) => !existingKeys.has(c.key)
+              );
               onImport({
                 name: name.trim() || "Imported deck",
                 format:
@@ -195,13 +308,16 @@ export function ImportDeckModal({ cards, committed, onClose, onImport }) {
                   (preview.commanderId || preview.parsed.commander ? "commander" : "standard"),
                 colors: meta?.colors || null,
                 commanderId: preview.commanderId,
-                entries: preview.entries,
+                partnerId: preview.partnerId || null,
+                entries: allEntries,
+                external: extra.external,
                 basics: preview.basics,
                 tokenCounts: meta?.tokenCounts || {},
                 extraTokens: meta?.extraTokens || [],
-              })
-            }
-            disabled={preview.entries.length === 0 && !preview.commanderId}
+                categories: [...existingCats, ...newCats],
+              });
+            }}
+            disabled={busy || (preview.entries.length === 0 && !preview.commanderId && shortfall.length === 0)}
             style={{
               width: "100%",
               background: STOCK_BG,

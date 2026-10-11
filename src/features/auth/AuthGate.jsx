@@ -1,23 +1,47 @@
 import React, { useState } from "react";
 import { Check } from "lucide-react";
 import { C, STOCK_BG, ROOT_BG, NOTCH, NOTCH_SM } from "../../lib/tokens";
+import { apiUrl, apiCredentials, authHeaders, isNativeApp, setAuthToken } from "../../lib/platform";
 
 export async function authPost(path, body) {
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-hk-app": "1" },
-    credentials: "same-origin",
-    body: JSON.stringify(body || {}),
+    headers: { "Content-Type": "application/json", "x-hk-app": "1", ...authHeaders() },
+    credentials: apiCredentials(),
+    // `app: true` asks for a sign-in token instead of a cookie (phone app).
+    body: JSON.stringify({ ...(body || {}), ...(isNativeApp() ? { app: true } : {}) }),
   });
   let data = {};
   try {
     data = await res.json();
   } catch (e) {}
+  if (res.ok && data && data.token) setAuthToken(data.token);
   return { ok: res.ok, status: res.status, data };
 }
 
-export function AuthGate({ onSignedIn, registrationOpen }) {
-  // signin | register | forgot | reset | sent | verify-needed
+// The admin's contact line (Settings → Contact line on the admin page): an
+// email address or a web link becomes a link, anything else stays plain text.
+export function ContactLine({ contact, lead = "Need help?" }) {
+  const text = String(contact || "").trim();
+  if (!text) return null;
+  const isMail = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(text);
+  const isUrl = /^https?:\/\/\S+$/i.test(text);
+  return (
+    <div data-testid="contact-line" style={{ marginTop: 16, fontSize: 12, color: C.parchmentDim, textAlign: "center", lineHeight: 1.5, overflowWrap: "anywhere" }}>
+      {lead}{" "}
+      {isMail || isUrl ? (
+        <a href={isMail ? `mailto:${text}` : text} target={isUrl ? "_blank" : undefined} rel="noreferrer" style={{ color: C.accent }}>
+          {text}
+        </a>
+      ) : (
+        <span style={{ color: C.parchment }}>{text}</span>
+      )}
+    </div>
+  );
+}
+
+export function AuthGate({ onSignedIn, registrationOpen, claimAvailable, contact = "" }) {
+  // signin | register | claim | forgot | reset | sent | verify-needed
   const params = new URLSearchParams(window.location.search);
   const resetToken = params.get("reset");
   const verifiedFlag = params.get("verified");
@@ -26,8 +50,13 @@ export function AuthGate({ onSignedIn, registrationOpen }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
+  const [profile, setProfile] = useState("");
+  const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [lockedContact, setLockedContact] = useState("");
+  const [ticket, setTicket] = useState("");
+  const [code, setCode] = useState("");
   const [note, setNote] = useState(
     verifiedFlag === "1"
       ? "Email confirmed — you can sign in now."
@@ -45,6 +74,12 @@ export function AuthGate({ onSignedIn, registrationOpen }) {
     setError("");
     const { ok, status, data } = await authPost("/api/auth/login", { email, password });
     setBusy(false);
+    if (ok && data.mfaRequired) {
+      setTicket(data.ticket);
+      setCode("");
+      setView("mfa");
+      return;
+    }
     if (ok) {
       clearQuery();
       return onSignedIn(data.user);
@@ -53,7 +88,27 @@ export function AuthGate({ onSignedIn, registrationOpen }) {
       setView("verify-needed");
       return;
     }
-    setError(data.error || "Couldn't sign in.");
+    if (status === 423) setLockedContact(data.contact || "");
+    setError(data.message || data.error || "Couldn't sign in.");
+  }
+
+  async function submitCode() {
+    setBusy(true);
+    setError("");
+    const { ok, status, data } = await authPost("/api/auth/mfa/login", { ticket, code });
+    setBusy(false);
+    if (ok) {
+      clearQuery();
+      return onSignedIn(data.user);
+    }
+    if (status === 423) {
+      setLockedContact(data.contact || "");
+      setView("signin");
+    } else if (data.error === "expired") {
+      setView("signin");
+      setPassword("");
+    }
+    setError(data.message || data.error || "Couldn't sign in.");
   }
 
   async function register() {
@@ -63,6 +118,23 @@ export function AuthGate({ onSignedIn, registrationOpen }) {
     const { ok, data } = await authPost("/api/auth/register", { email, password });
     setBusy(false);
     if (!ok) return setError(data.error || "Couldn't create the account.");
+    // A server without email confirms accounts straight away and signs you in.
+    if (data.user) return onSignedIn(data.user);
+    setNote("");
+    setView("sent");
+  }
+
+  // Moving an old PIN profile into an account: name + PIN prove it's yours,
+  // the email and password are the new sign-in. The profile's data comes
+  // with it; the old file stays on the server as a backup.
+  async function claim() {
+    if (password !== password2) return setError("The two passwords don't match.");
+    setBusy(true);
+    setError("");
+    const { ok, data } = await authPost("/api/auth/claim", { profile, pin, email, password });
+    setBusy(false);
+    if (!ok) return setError(data.error || "Couldn't claim the profile.");
+    if (data.user) return onSignedIn(data.user);
     setNote("");
     setView("sent");
   }
@@ -168,7 +240,7 @@ export function AuthGate({ onSignedIn, registrationOpen }) {
               color: C.goldBright,
             }}
           >
-            HOARDKEEPER
+            BINDERWYRM
           </h1>
         </div>
         <div
@@ -184,10 +256,14 @@ export function AuthGate({ onSignedIn, registrationOpen }) {
         >
           {view === "register"
             ? "Create your vault"
+            : view === "claim"
+            ? "Move your profile to an account"
             : view === "forgot"
             ? "Recover your account"
             : view === "reset"
             ? "Choose a new password"
+            : view === "mfa"
+            ? "Two-factor code"
             : "Sign in to your vault"}
         </div>
 
@@ -234,6 +310,103 @@ export function AuthGate({ onSignedIn, registrationOpen }) {
                 </button>
               )}
             </div>
+            {claimAvailable && (
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}`, textAlign: "center" }}>
+                <div style={{ fontSize: 12, color: C.parchmentDim, marginBottom: 2 }}>
+                  Used a profile name and PIN before?
+                </div>
+                <button style={link} onClick={() => { setView("claim"); setError(""); setNote(""); }}>
+                  Move it to an account
+                </button>
+              </div>
+            )}
+          </>
+        )}
+
+        {view === "claim" && (
+          <>
+            <input
+              style={input}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              placeholder="Your old profile name"
+              aria-label="Old profile name"
+              value={profile}
+              onChange={(e) => setProfile(e.target.value.toLowerCase())}
+            />
+            <input
+              style={input}
+              type="password"
+              autoComplete="off"
+              placeholder="Its PIN (empty if it had none)"
+              aria-label="Old PIN"
+              value={pin}
+              onChange={(e) => setPin(e.target.value)}
+            />
+            <input
+              style={input}
+              type="email"
+              autoComplete="username"
+              placeholder="Email for the new account"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <input
+              style={input}
+              type="password"
+              autoComplete="new-password"
+              placeholder="New password (10+ characters)"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <input
+              style={input}
+              type="password"
+              autoComplete="new-password"
+              placeholder="Repeat password"
+              value={password2}
+              onChange={(e) => setPassword2(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && claim()}
+            />
+            <button style={primary} onClick={claim} disabled={busy}>
+              {busy ? "…" : "Move my profile"}
+            </button>
+            <div
+              style={{
+                fontFamily: "'IBM Plex Mono', monospace",
+                fontSize: 10,
+                color: C.parchmentDim,
+                marginTop: 10,
+                lineHeight: 1.5,
+              }}
+            >
+              Your collection comes with you, and your profile name becomes your public handle so
+              shared links keep working. The PIN stops being used.
+            </div>
+            <button style={{ ...link, marginTop: 8 }} onClick={() => { setView("signin"); setError(""); }}>
+              ← Back to sign in
+            </button>
+          </>
+        )}
+
+        {view === "mfa" && (
+          <>
+            <p style={{ fontSize: 12.5, color: C.parchmentDim, lineHeight: 1.5, marginTop: 0 }}>Enter the 6-digit code from your authenticator app — or one of your recovery codes.</p>
+            <input
+              style={input}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              aria-label="Two-factor code"
+              placeholder="123456"
+              value={code}
+              autoFocus
+              onChange={(e) => setCode(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitCode()}
+            />
+            <button style={primary} onClick={submitCode} disabled={busy || !code.trim()}>
+              {busy ? "…" : "Verify"}
+            </button>
           </>
         )}
 
@@ -375,6 +548,7 @@ export function AuthGate({ onSignedIn, registrationOpen }) {
             </div>
           </div>
         )}
+        <ContactLine contact={contact || lockedContact} lead={lockedContact || error ? "Contact the admin:" : "Need help?"} />
       </div>
     </div>
   );

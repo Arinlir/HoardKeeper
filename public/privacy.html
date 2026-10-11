@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Binderwyrm — Privacy policy</title>
+<meta name="description" content="What the Binderwyrm app and the hoard.arinvault.eu server store, where it goes, and your rights.">
+<style>
+  :root {
+    --bg: #15171B; --panel: #1B1F26; --line: rgba(255,255,255,0.10);
+    --text: #E4E7EA; --dim: #8A8F97; --bright: #F2F4F6; --accent: #6FA6D1;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #F4F5F7; --panel: #FFFFFF; --line: rgba(0,0,0,0.10);
+            --text: #22262C; --dim: #5B616A; --bright: #0F1115; --accent: #2E5C82; }
+  }
+  html { background: var(--bg); color-scheme: dark light; }
+  body {
+    margin: 0 auto; max-width: 760px; padding: 32px 18px 64px;
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--text); background: var(--bg);
+  }
+  h1 { font-size: 28px; color: var(--bright); margin: 0 0 4px; letter-spacing: 0.5px; }
+  h2 { font-size: 19px; color: var(--bright); margin: 36px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; color: var(--bright); margin: 20px 0 4px; }
+  .mark { display: inline-block; width: 14px; height: 14px; background: var(--accent); margin-right: 8px;
+          clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 5px, 100% 100%, 0 100%); }
+  .meta { color: var(--dim); font-size: 14px; }
+  a { color: var(--accent); }
+  .box { background: var(--panel); border: 1px solid var(--line); padding: 14px 16px; margin: 16px 0;
+         clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%); }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 8px 0; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 8px 8px 0; border-bottom: 1px solid var(--line); }
+  th { color: var(--bright); font-weight: 600; }
+  code { font-size: 0.92em; }
+  ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h1><span class="mark" aria-hidden="true"></span>Privacy policy</h1>
+<p class="meta">Binderwyrm (formerly HoardKeeper): the website, the Android and iPhone app, and the server at hoard.arinvault.eu.<br>
+Effective 28 September 2026.</p>
+
+<div class="box">
+  <strong>The short version.</strong> Binderwyrm keeps your Magic: The Gathering collection either
+  <em>on your phone only</em> or <em>on a Binderwyrm server you choose</em>. There are no ads, no
+  analytics, no trackers, and nothing is sold. Card scanning happens on your device, and photos never
+  leave it. To show cards and prices, your device talks directly to Scryfall and to a currency-rate
+  service, which see your IP address the way any website does.
+</div>
+
+<h2>1. Who is responsible</h2>
+<p>
+  Binderwyrm and the server at <code>hoard.arinvault.eu</code> are made and run by
+  <strong>Michael Ondráček</strong>, Prague, Czech Republic (“we”). Contact:
+  <a href="mailto:privacy@arinvault.eu">privacy@arinvault.eu</a>.
+</p>
+<p>
+  Binderwyrm is open source and anyone can run their own server. <strong>If you connect the app to
+  someone else's server, that person runs it and is responsible for the data stored on it.</strong>
+  This policy covers the app itself and our own server.
+</p>
+
+<h2>2. What is stored, and where</h2>
+
+<h3>Your collection (“vault”)</h3>
+<p>
+  Your cards, collections, what you paid, prices, decks, wishlist, game records and display settings.
+  Where it's kept is your choice:
+</p>
+<ul>
+  <li><strong>This phone / this browser only</strong>: kept in the app's storage on your device. Nobody else,
+      including us, has a copy. Uninstalling the app or clearing site data deletes it, so use
+      <em>Export</em> to keep a backup.</li>
+  <li><strong>On a Binderwyrm server</strong>: kept on that server in your account, so it follows you
+      between devices.</li>
+</ul>
+
+<h3>Email and password</h3>
+<p>
+  A server stores your email address and a hash of your password, and keeps you signed in with a session.
+  Your email is used only to sign you in and to send account emails (confirmation, password reset). You
+  can delete the account in <em>Settings</em>.
+</p>
+<ul>
+  <li>An optional <strong>public handle</strong> is the name in your shared links and in the playgroup list.
+      It is visible to everyone who is signed in to that server, and anyone can open the pages it unlocks
+      (your wishlist, and your collection only if you switch that on). With no handle, nothing is public.</li>
+  <li>Servers that used to run PIN profiles keep the old profile files, read-only, until their owners move
+      them into an account. Moving one copies it into the account and leaves the old file as a backup.</li>
+</ul>
+
+<h3>What the app keeps on your device</h3>
+<ul>
+  <li>The server address you connected to (phone app).</li>
+  <li>A sign-in session.</li>
+  <li>Display preferences.</li>
+  <li>The Life Counter's current game.</li>
+  <li>Cached card-set lists, so it's faster next time.</li>
+</ul>
+
+<h2>3. The camera</h2>
+<p>
+  The camera is used only while you are scanning a card, and only after you allow it:
+</p>
+<ul>
+  <li>In the phone app, text is read <strong>on the device</strong> (Google ML Kit on Android, Apple Vision on
+      iPhone).</li>
+  <li>On the website, a photo you take or upload is read <strong>in your browser</strong>.</li>
+  <li>In both cases the only thing used afterwards is the set code and collector number. Images are not
+      uploaded, not stored, and not sent to us or anyone else.</li>
+</ul>
+
+<h2>4. Services your device contacts directly</h2>
+<p>
+  To show cards, prices and currency conversions, the app fetches public data from these services. Like
+  any website, they see your IP address and the request (for example, which card was looked up). They
+  receive <em>no</em> collection data, PIN, email or name from us.
+</p>
+<table>
+  <tr><th>Service</th><th>Why</th></tr>
+  <tr><td><a href="https://scryfall.com/docs/privacy">Scryfall</a> (api.scryfall.com, cards.scryfall.io)</td>
+      <td>Card details, card images, market prices, set lists.</td></tr>
+  <tr><td><a href="https://www.frankfurter.app/">Frankfurter</a> (api.frankfurter.app), falling back to
+      <a href="https://www.exchangerate-api.com/terms">ExchangeRate-API</a> (open.er-api.com)</td>
+      <td>USD → EUR / CZK exchange rates, at most about once a day.</td></tr>
+  <tr><td><a href="https://www.jsdelivr.com/terms/privacy-policy-jsdelivr-net">jsDelivr</a> (cdn.jsdelivr.net)</td>
+      <td>Website only: the first time you scan a card on the website, the text-recognition language file is
+      downloaded from here. The phone app doesn't use it.</td></tr>
+</table>
+<p>
+  Links to TCGplayer, Cardmarket and Ko-fi only take you to those sites when you tap them. After that,
+  their own privacy policies apply. Our server also downloads Scryfall's public card database once a
+  day. That download contains no information about you.
+</p>
+
+<h2>5. What you choose to share</h2>
+<ul>
+  <li><strong>Wishlist link</strong> (<code>/w/&lt;profile&gt;</code>): anyone with the address can see your
+      wishlist, plus cards you've marked as wanting a replacement. Nothing else is shown.</li>
+  <li><strong>Read-only guest view</strong> (<code>/v/&lt;profile&gt;</code>): off unless you turn it on in
+      <em>Settings</em>. It shows cards, prices and decks, never what you paid.</li>
+  <li><strong>Playgroup trades</strong>: off unless you turn it on. Other profiles on the same server can then
+      see which of your cards match their wishlists.</li>
+</ul>
+
+<h2>6. Security records on our server</h2>
+<ul>
+  <li>To stop people guessing passwords, the server remembers the IP addresses that entered a wrong password.
+      This is kept in memory only, for at most one hour, and never written to disk.</li>
+  <li>The reverse proxy in front of the server keeps standard access logs (IP address, time, address
+      requested, browser type) to keep the service secure and working. They are deleted after 30 days.</li>
+</ul>
+
+<h2>7. Legal basis (GDPR)</h2>
+<ul>
+  <li><strong>Storing and syncing your vault, and your account:</strong> needed to provide the service you asked
+      for (Art. 6(1)(b)).</li>
+  <li><strong>Security records:</strong> our legitimate interest in keeping the service and your data safe
+      (Art. 6(1)(f)).</li>
+  <li><strong>Camera:</strong> used only when you start a scan and your device's permission allows it.</li>
+</ul>
+
+<h2>8. How long data is kept</h2>
+<ul>
+  <li>Your vault stays on the server until you delete it (<em>Settings → Account → Delete</em>). Deletion removes it immediately.</li>
+  <li>Server backups that contain it are overwritten within 30 days.</li>
+  <li>Data kept only on your device is deleted when you clear the app's data or uninstall it.</li>
+</ul>
+
+<h2>9. Your rights</h2>
+<p>
+  You can ask to see, correct, export or delete the personal data we hold about you. You can also object
+  to or restrict how it's used. Most of this you can do yourself in the app:
+</p>
+<ul>
+  <li><em>Export</em> gives you your whole collection as a file.</li>
+  <li><em>Settings</em> lets you rename or delete your profile or account.</li>
+</ul>
+<p>
+  For anything else, write to <a href="mailto:privacy@arinvault.eu">privacy@arinvault.eu</a>. You can also
+  complain to a data protection authority. In the Czech Republic that is the
+  <a href="https://uoou.gov.cz/">Úřad pro ochranu osobních údajů</a> (Office for Personal Data Protection).
+</p>
+
+<h2>10. Children</h2>
+<p>
+  Binderwyrm is not directed at children under 13, and we don't knowingly store data about them. If you
+  believe a child has created a profile on our server, contact us and we'll delete it.
+</p>
+
+<h2>11. Changes</h2>
+<p>
+  If this policy changes, the new version will be published here with a new effective date. Significant
+  changes will also be noted in the app's release notes.
+</p>
+
+</body>
+</html>

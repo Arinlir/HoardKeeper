@@ -1,6 +1,6 @@
 // Verifies the actual bug: GlossaryView used to read from a different
 // localStorage key ("lf-oracle-cache") than fetchOracleTexts writes to
-// ("lf-oracle-v2"), so a completed scan always looked like it vanished on
+// ("lf-oracle-v4"), so a completed scan always looked like it vanished on
 // the next visit. This confirms data already cached under the REAL key is
 // picked up automatically -- no manual Scan click needed -- and that a
 // genuinely fresh card still triggers exactly one real fetch.
@@ -13,12 +13,11 @@ globalThis.localStorage = dom.window.localStorage;
 globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-localStorage.setItem("lf-profile", JSON.stringify({ name: "michael", pin: "" }));
 
 // Pre-seed the cache under the CORRECT key, exactly as if a scan had
 // already happened in an earlier session.
 localStorage.setItem(
-  "lf-oracle-v2",
+  "lf-oracle-v4",
   JSON.stringify({
     "sol-ring-1": { t: "{T}: Add {C}{C}.", ty: "Artifact", parts: [] },
   })
@@ -32,8 +31,9 @@ const cards = [
 let collectionCalls = 0;
 globalThis.fetch = (url, opts) => {
   const u = String(url);
-  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "pin" }) });
-  if (u.includes("/api/store/michael"))
+  if (u.includes("/api/auth/me")) return Promise.resolve({ ok: true, json: async () => ({ user: { id: 1, email: "michael@example.com", verified: true, handle: "michael" } }) });
+  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "accounts" }) });
+  if (u.includes("/api/store"))
     return Promise.resolve({ ok: true, json: async () => ({ value: JSON.stringify({ collections: [], cards }) }) });
   if (u.includes("api.scryfall.com/cards/collection")) {
     collectionCalls++;

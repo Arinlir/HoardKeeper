@@ -1,71 +1,58 @@
 import React, { useState, useEffect, useRef } from "react";
-import { ChevronDown, RotateCcw, RotateCw, Swords, Users, X } from "lucide-react";
-import { C, STOCK_BG, STOCK_SHADOW, ROOT_BG } from "../../lib/tokens";
+import {
+  EMPTY_TABLE,
+  LIFE_STARTING,
+  LIFE_STORAGE_KEY,
+  MAX_PLAYERS,
+  MIN_PLAYERS,
+  clampScale,
+  cmdDamage,
+  cmdKey,
+  counterValue,
+  dimColor,
+  defaultColorFor,
+  defaultLayoutFor,
+  facingOf,
+  flipCoin,
+  gameResult,
+  highRoll,
+  inkFor,
+  layoutById,
+  lethalReason,
+  loadSavedLife,
+  makeLifePlayer,
+  rollDie,
+  rollsById,
+  seatBackground,
+  winnerOf,
+  STARS_THEME,
+} from "./lifeState";
+import { CommanderCard, Face, SeatChips, SeatPanel, Tile, chipsHeightFor } from "./LifeSeat";
+import { DecksModal, DiceModal, Hub, KeypadModal, LayoutPicker, LogModal, MenuPanel, WinnerModal } from "./LifeOverlays";
+import { FONT, GAP, L, pill, useHold } from "./lifeUi";
 
-export const LIFE_STARTING = { commander: 40, normal: 20 };
-export const LIFE_STORAGE_KEY = "hk-life-tracker";
+// Re-exported so anything that imported these from the view still can.
+export { LIFE_STARTING, LIFE_STORAGE_KEY, makeLifePlayer, loadSavedLife };
 
-export function makeLifePlayer(id, name, life) {
-  return { id, name, life, cmdDmg: {} };
-}
+const flipRot = (r) => (r === 0 ? 180 : r === 180 ? 0 : -r);
 
-export function loadSavedLife() {
-  try {
-    const s = JSON.parse(localStorage.getItem(LIFE_STORAGE_KEY));
-    if (s && Array.isArray(s.players) && s.players.length >= 2) return s;
-  } catch (e) {}
-  return null;
-}
-
-export const lifeIconBtn = {
-  background: "none",
-  border: "none",
-  cursor: "pointer",
-  padding: 3,
-  display: "flex",
-  alignItems: "center",
-};
-export const lifeStepBtn = {
-  background: "rgba(185,191,199,0.1)",
-  border: `1px solid rgba(185,191,199,0.25)`,
-  borderRadius: 5,
-  color: C.parchment,
-  fontSize: 12.5,
-  fontWeight: 600,
-  padding: "5px 11px",
-  cursor: "pointer",
-};
-export const lifeTinyBtn = {
-  background: "rgba(185,191,199,0.1)",
-  border: `1px solid rgba(185,191,199,0.25)`,
-  borderRadius: 3,
-  color: C.parchment,
-  fontSize: 11,
-  width: 20,
-  height: 20,
-  cursor: "pointer",
-  lineHeight: 1,
-};
-export function lifeCountBtn(disabled) {
-  return {
-    background: "none",
-    border: `1px solid rgba(185,191,199,0.25)`,
-    borderRadius: 3,
-    color: disabled ? "rgba(139,144,151,0.4)" : C.parchmentDim,
-    width: 20,
-    height: 20,
-    cursor: disabled ? "default" : "pointer",
-    fontSize: 13,
-    lineHeight: 1,
-  };
-}
-
-export function LifeCounterView({ onExit }) {
+/*
+ * `decks` and `onRecordGame` are the only things this screen knows about the
+ * rest of the app, and they arrive as props on purpose: the Life Counter still
+ * imports nothing from the collection, decks or storage layers.
+ *
+ * The board is full-bleed: coloured seats on black, a hexagon where their
+ * corners meet, and nothing else. Everything that isn't a life total — the
+ * format, the layout, dice, counters, undo, exit — lives behind the hub.
+ */
+export function LifeCounterView({ onExit, decks = [], onRecordGame }) {
   const idRef = useRef(1);
+  const saved0 = useRef(undefined);
+  if (saved0.current === undefined) saved0.current = loadSavedLife();
+  const saved = saved0.current;
 
-  const [format, setFormat] = useState(() => loadSavedLife()?.format || "commander");
+  const [format, setFormat] = useState(() => saved?.format || "commander");
   const [players, setPlayers] = useState(() => {
-    const saved = loadSavedLife();
     if (saved) {
       idRef.current = Math.max(...saved.players.map((p) => p.id)) + 1;
       return saved.players;
@@ -73,33 +60,89 @@ export function LifeCounterView({ onExit }) {
     idRef.current = 5;
     return [1, 2, 3, 4].map((i) => makeLifePlayer(i, `Player ${i}`, LIFE_STARTING.commander));
   });
-  const [expanded, setExpanded] = useState(null);
-  const [rotated, setRotated] = useState({});
+  const [layout, setLayout] = useState(() => saved?.layout || defaultLayoutFor(4));
+  // Shared table state: who wears the crown, who holds the initiative, and
+  // whether it's day or night. Nobody's property, so it lives beside players.
+  const [table, setTable] = useState(() => ({ ...EMPTY_TABLE, ...(saved?.table || {}) }));
+  // Which optional counters this table is tracking. Off by default: a normal
+  // game shouldn't carry five rows of zeroes on every seat.
+  const [visibleCounters, setVisibleCounters] = useState(() => saved?.visibleCounters || []);
+  const [log, setLog] = useState(() => saved?.log || []);
 
-  // Floating "-N" / "+N" delta badges: taps accumulate into a running total
-  // per player. The badge lingers while taps keep coming, then — once idle —
-  // holds a moment before fading and scaling away, so a burst of quick taps
-  // reads as one clear number instead of a blur of individual flashes.
+  // What's on screen besides the board.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [picker, setPicker] = useState(false);
+  const [panelFor, setPanelFor] = useState(null); // a seat's own options
+  // null, a seat id (reading the commander damage that seat has received), or
+  // { deal: id, second } (one seat's commander A/B dealing damage to the others).
+  const [cmd, setCmd] = useState(null);
+  const [roll, setRoll] = useState(null); // the who-starts roll, while it's up
+  const [showLog, setShowLog] = useState(false);
+  const [dice, setDice] = useState(null); // null | { last, history }
+  const [assigning, setAssigning] = useState(false);
+  const [keypad, setKeypad] = useState(null); // null | { id, digits }
+  const [winnerSeen, setWinnerSeen] = useState(false);
+
+  const startedAt = useRef(Date.now());
+  const recorded = useRef(false);
+  const { press, clear: clearHold } = useHold();
+
+  const [viewport, setViewport] = useState(() => ({
+    w: typeof window !== "undefined" ? window.innerWidth : 0,
+    h: typeof window !== "undefined" ? window.innerHeight : 0,
+  }));
+  useEffect(() => {
+    // window.innerHeight, not 100vh: on iOS Safari 100vh is the height the page
+    // would have with the toolbars hidden.
+    const measure = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
+  // Floating "-N" / "+N" delta badges: taps accumulate into a running total per
+  // player. The badge lingers while taps keep coming, then — once idle — holds
+  // a moment before fading away, so a burst of quick taps reads as one clear
+  // number instead of a blur of individual flashes.
   const [badges, setBadges] = useState({});
   const badgeTimers = useRef({});
   const badgePoofTimers = useRef({});
   const LINGER_MS = 900;
   const POOF_MS = 550;
 
+  // Undo keeps whole snapshots rather than inverse operations: a game state is
+  // a handful of small objects, and "put it back how it was" can't drift out of
+  // step with the actions the way a hand-written inverse can.
+  const undoRef = useRef([]);
+  const [undoDepth, setUndoDepth] = useState(0);
+  const stateRef = useRef();
+  stateRef.current = { players, table, layout };
+
   useEffect(() => {
     return () => {
       Object.values(badgeTimers.current).forEach(clearTimeout);
       Object.values(badgePoofTimers.current).forEach(clearTimeout);
+      clearHold();
     };
-  }, []);
+  }, [clearHold]);
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === "Escape") onExit?.();
+      if (e.key !== "Escape") return;
+      // Escape closes whatever's on top before it closes the counter itself.
+      if (keypad) return setKeypad(null);
+      if (picker) return setPicker(false);
+      if (dice) return setDice(null);
+      if (showLog) return setShowLog(false);
+      if (assigning) return setAssigning(false);
+      if (menuOpen) return setMenuOpen(false);
+      if (panelFor !== null) return setPanelFor(null);
+      if (cmd !== null) return setCmd(null);
+      if (roll) return setRoll(null);
+      onExit?.();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onExit]);
+  }, [onExit, keypad, picker, dice, showLog, assigning, menuOpen, panelFor, cmd, roll]);
 
   function bumpBadge(id, delta) {
     setBadges((b) => {
@@ -124,88 +167,426 @@ export function LifeCounterView({ onExit }) {
 
   useEffect(() => {
     try {
-      localStorage.setItem(LIFE_STORAGE_KEY, JSON.stringify({ format, players }));
+      localStorage.setItem(LIFE_STORAGE_KEY, JSON.stringify({ format, layout, players, table, visibleCounters, log: log.slice(0, 40) }));
     } catch (e) {}
-  }, [format, players]);
+  }, [format, layout, players, table, visibleCounters, log]);
 
-  const maxPlayers = format === "commander" ? 6 : 4;
-  const minPlayers = 2;
+  const maxPlayers = format === "commander" ? MAX_PLAYERS : 6;
+  const minPlayers = MIN_PLAYERS;
+  const layoutObj = layoutById(layout) || layoutById(defaultLayoutFor(players.length));
+
+  // ---- history ----
+  function note(text) {
+    setLog((l) => [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, t: Date.now(), text }, ...l].slice(0, 80));
+  }
+
+  // Every action that changes the game calls this first. Snapshot, then act.
+  function remember() {
+    undoRef.current = [...undoRef.current.slice(-49), stateRef.current];
+    setUndoDepth(undoRef.current.length);
+  }
+
+  function undo() {
+    const prev = undoRef.current.pop();
+    setUndoDepth(undoRef.current.length);
+    if (!prev) return;
+    setPlayers(prev.players);
+    setTable(prev.table);
+    setLayout(prev.layout);
+    setBadges({});
+    note("Undid the last change");
+  }
+
+  // ---- game actions ----
+  // Seats follow the layout: more seats than players adds players, fewer drops
+  // the last ones.
+  function seatCount(ps, n) {
+    if (ps.length === n) return ps;
+    if (ps.length > n) return ps.slice(0, n);
+    const out = [...ps];
+    while (out.length < n) {
+      const id = idRef.current++;
+      out.push(makeLifePlayer(id, `Player ${out.length + 1}`, LIFE_STARTING[format], defaultColorFor(out.length)));
+    }
+    return out;
+  }
+
+  function applyLayout(id) {
+    const next = layoutById(id);
+    if (!next || next.seats.length > maxPlayers) return;
+    if (id !== layout) {
+      remember();
+      setLayout(id);
+      setPlayers((ps) => seatCount(ps, next.seats.length));
+      setPanelFor(null);
+      setCmd(null);
+    }
+    setPicker(false);
+  }
+
+  function resizeTable(n) {
+    const id = defaultLayoutFor(n);
+    if (!id) return;
+    remember();
+    setLayout(id);
+    setPlayers((ps) => seatCount(ps, n));
+    setPanelFor(null);
+    setCmd(null);
+  }
 
   function setFormatAndReset(f) {
     if (f === format) return;
+    remember();
     const start = LIFE_STARTING[f];
+    let ps = players;
+    if (f === "normal" && ps.length > 6) {
+      ps = ps.slice(0, 6);
+      setLayout(defaultLayoutFor(6));
+    }
     setFormat(f);
-    setPlayers((ps) => (f === "commander" ? ps : ps.slice(0, 4)).map((p) => ({ ...p, life: start, cmdDmg: {} })));
+    setPlayers(ps.map((p) => ({ ...p, life: start, cmdDmg: {}, counters: {}, out: false, outAt: null })));
+    setTable({ ...EMPTY_TABLE });
     setBadges({});
+    setCmd(null);
+    setRoll(null);
+    note(`New ${f} game — everyone at ${start}`);
   }
 
-  function addPlayer() {
-    setPlayers((ps) => {
-      if (ps.length >= maxPlayers) return ps;
-      const id = idRef.current++;
-      return [...ps, makeLifePlayer(id, `Player ${ps.length + 1}`, LIFE_STARTING[format])];
-    });
+  // Filed once per game, whichever button the winner screen is dismissed with.
+  function fileResult() {
+    if (recorded.current || !onRecordGame) return;
+    recorded.current = true;
+    onRecordGame(gameResult(players, { format, startedAt: startedAt.current }));
   }
 
-  function removePlayer() {
-    setPlayers((ps) => (ps.length <= minPlayers ? ps : ps.slice(0, -1)));
+  function assignDeck(id, deck) {
+    // A deck with two commanders (partners, a Background, a Doctor's companion…)
+    // turns the seat's Partners switch on, so commander damage is counted for
+    // each of them; a one-commander deck turns it off and forgets the second's
+    // damage, same as flipping the switch by hand. Picking "None" leaves it be.
+    const second = cmdKey(id, true);
+    setPlayers((ps) =>
+      ps.map((p) => {
+        if (p.id !== id) return p;
+        const next = { ...p, deckId: deck?.id || null, deckName: deck?.name || null };
+        if (!deck) return next;
+        next.partner = !!deck.partnerId;
+        if (!next.partner && second in (next.cmdDmg || {})) {
+          const { [second]: _dropped, ...rest } = next.cmdDmg;
+          next.cmdDmg = rest;
+        }
+        return next;
+      })
+    );
+    if (deck) note(`${players.find((p) => p.id === id)?.name || "A player"} is on ${deck.name}${deck.partnerId ? " (two commanders)" : ""}`);
   }
 
   function newGame() {
+    remember();
     const start = LIFE_STARTING[format];
-    setPlayers((ps) => ps.map((p) => ({ ...p, life: start, cmdDmg: {} })));
-    setExpanded(null);
+    // Decks, colours and names stay put: the same table usually plays another
+    // game with the same decks, and re-picking five of them every time would be
+    // a chore.
+    setPlayers((ps) => ps.map((p) => ({ ...p, life: start, cmdDmg: {}, counters: {}, out: false, outAt: null })));
+    startedAt.current = Date.now();
+    recorded.current = false;
+    setTable({ ...EMPTY_TABLE });
+    setPanelFor(null);
+    setCmd(null);
+    setRoll(null);
     setBadges({});
+    setWinnerSeen(false);
+    setLog([]);
+    note(`New game — everyone at ${start}`);
   }
 
   function adjustLife(id, delta) {
+    remember();
     setPlayers((ps) => ps.map((p) => (p.id === id ? { ...p, life: p.life + delta } : p)));
     bumpBadge(id, delta);
   }
 
+  function setLifeTotal(id, total) {
+    remember();
+    const player = players.find((p) => p.id === id);
+    const delta = total - (player?.life ?? 0);
+    setPlayers((ps) => ps.map((p) => (p.id === id ? { ...p, life: total } : p)));
+    if (delta) bumpBadge(id, delta);
+    note(`${player?.name || "A player"} set to ${total}`);
+  }
+
   function resetPlayer(id) {
+    remember();
     const start = LIFE_STARTING[format];
-    setPlayers((ps) => ps.map((p) => (p.id === id ? { ...p, life: start, cmdDmg: {} } : p)));
+    setPlayers((ps) => ps.map((p) => (p.id === id ? { ...p, life: start, cmdDmg: {}, counters: {}, out: false } : p)));
   }
 
-  function renamePlayer(id, name) {
-    setPlayers((ps) => ps.map((p) => (p.id === id ? { ...p, name } : p)));
+  function patchPlayer(id, patch) {
+    setPlayers((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }
 
-  function adjustCmdDmg(id, fromId, delta) {
+  function adjustCmdDmg(targetId, fromId, second, delta) {
+    remember();
+    const key = cmdKey(fromId, second);
     setPlayers((ps) =>
       ps.map((p) => {
-        if (p.id !== id) return p;
-        const next = Math.max(0, (p.cmdDmg[fromId] || 0) + delta);
-        return { ...p, cmdDmg: { ...p.cmdDmg, [fromId]: next } };
+        if (p.id !== targetId) return p;
+        const next = Math.max(0, (p.cmdDmg[key] || 0) + delta);
+        return { ...p, cmdDmg: { ...p.cmdDmg, [key]: next } };
       })
     );
   }
 
-  const cols = players.length <= 2 ? 1 : players.length <= 4 ? 2 : 3;
-  const rows = Math.ceil(players.length / cols);
+  function adjustCounter(id, key, delta) {
+    remember();
+    setPlayers((ps) =>
+      ps.map((p) => {
+        if (p.id !== id) return p;
+        const next = Math.max(0, counterValue(p, key) + delta);
+        return { ...p, counters: { ...p.counters, [key]: next } };
+      })
+    );
+  }
 
-  // The life number used a flat vw-based clamp regardless of column count,
-  // so at 3 columns (5-6 players) it stayed close to full size while its
-  // cell shrank to a third of the screen width — the number then collided
-  // with the buttons and hint text beneath it. Scale both the vw factor and
-  // the px ceiling down as columns increase, and cap by vh too so a wide,
-  // short window (the common case that triggered this) can't blow past the
-  // cell's actual height either.
-  const NUMBER_VW = { 1: 9, 2: 6.5, 3: 5 };
-  const NUMBER_MAX_PX = { 1: 96, 2: 78, 3: 62 };
-  const numberFontSize = `clamp(28px, min(${NUMBER_VW[cols]}vw, 32vh), ${NUMBER_MAX_PX[cols]}px)`;
+  function toggleCounter(key) {
+    setVisibleCounters((v) => (v.includes(key) ? v.filter((k) => k !== key) : [...v, key]));
+  }
+
+  function setOut(id, out) {
+    remember();
+    const player = players.find((p) => p.id === id);
+    // The stamp is what lets a finished game say who came second.
+    setPlayers((ps) => ps.map((p) => (p.id === id ? { ...p, out, outAt: out ? Date.now() : null } : p)));
+    // The crown and the initiative don't stay with someone who's left the game.
+    setTable((t) => ({
+      ...t,
+      monarch: out && t.monarch === id ? null : t.monarch,
+      initiative: out && t.initiative === id ? null : t.initiative,
+    }));
+    note(`${player?.name || "A player"} is ${out ? "out" : "back in"}`);
+  }
+
+  // Partners are two commanders; turning it off forgets damage from the second.
+  function togglePartner(id) {
+    remember();
+    const on = !players.find((p) => p.id === id)?.partner;
+    const gone = cmdKey(id, true);
+    setPlayers((ps) =>
+      ps.map((p) => {
+        const next = p.id === id ? { ...p, partner: on } : p;
+        if (on || !(gone in next.cmdDmg)) return next;
+        const { [gone]: _dropped, ...rest } = next.cmdDmg;
+        return { ...next, cmdDmg: rest };
+      })
+    );
+  }
+
+  function claim(key, id) {
+    remember();
+    const player = players.find((p) => p.id === id);
+    setTable((t) => ({ ...t, [key]: t[key] === id ? null : id }));
+    const label = key === "monarch" ? "monarch" : "the initiative";
+    note(table[key] === id ? `Nobody has ${label}` : `${player?.name || "A player"} takes ${label}`);
+  }
+
+  // Day → night → neither, in one button rather than a menu.
+  function cycleDayNight() {
+    remember();
+    const next = table.dayNight === null ? "day" : table.dayNight === "day" ? "night" : null;
+    setTable((t) => ({ ...t, dayNight: next }));
+    note(next ? `It becomes ${next}` : "Day and night end");
+  }
+
+  // ---- dice ----
+  function pushRoll(entry) {
+    setDice((d) => ({ last: entry, history: [entry, ...((d && d.history) || [])].slice(0, 8) }));
+    note(entry.text);
+  }
+  function doRoll(sides) {
+    const n = rollDie(sides);
+    pushRoll({ kind: "die", value: String(n), text: `d${sides} rolled ${n}` });
+  }
+  function doFlip() {
+    const side = flipCoin();
+    pushRoll({ kind: "coin", value: side, text: `Coin came up ${side}` });
+  }
+  // The who-starts roll is played out on the board itself: every seat turns
+  // dark and shows its number, and the winner lights up.
+  function startRoll() {
+    const r = highRoll(players);
+    const detail = r.rounds[r.rounds.length - 1].rolls.map((x) => `${x.name} ${x.roll}`).join(" · ");
+    note(r.winner ? `${r.winner.name} wins the roll (${detail})` : `Still tied after ${r.rounds.length} rolls`);
+    setRoll({ rolls: rollsById(r), winnerId: r.winner ? r.winner.id : null, winnerName: r.winner?.name || null });
+    setDice(null);
+    setMenuOpen(false);
+    setPanelFor(null);
+    setCmd(null);
+  }
+
+  const winner = winnerOf(players);
+  const landscape = viewport.w > viewport.h * 1.15 && viewport.h > 0;
+  const hubMode = roll ? "close" : cmd !== null ? "cmd" : "menu";
+  const onHub = () => {
+    if (roll) return setRoll(null);
+    if (cmd !== null) return setCmd(null);
+    setPanelFor(null);
+    setMenuOpen(true);
+  };
+  const dealing = cmd !== null && typeof cmd === "object" ? { src: players.find((p) => p.id === cmd.deal), second: !!cmd.second } : null;
+  const cmdTarget = cmd !== null && typeof cmd !== "object" ? players.find((p) => p.id === cmd) : null;
+
+  function renderSeat(p, i) {
+    const seat = layoutObj.seats[i];
+    if (!seat) return null;
+    const base = facingOf(seat, layoutObj, landscape);
+    const rot = p.flip ? flipRot(base) : base;
+    const bg = seatBackground(p.color);
+    const ink = inkFor(p.color);
+    const commander = format === "commander";
+
+    // -- the who-starts roll
+    if (roll) {
+      const won = roll.winnerId === p.id;
+      return (
+        <Tile key={p.id} seat={seat} background={won ? seatBackground(STARS_THEME.id) : "#252427"} out={false}>
+          <Face value={roll.rolls[p.id] ?? "–"} rot={rot} ink={won ? "#000000" : "#FFFFFF"} press={press} name={p.name} centerLabel={`${p.name} rolled ${roll.rolls[p.id] ?? "nothing"}`} />
+        </Tile>
+      );
+    }
+
+    // -- one commander dealing damage to everyone else
+    if (dealing?.src) {
+      const { src, second } = dealing;
+      const which = src.partner ? ` ${second ? "B" : "A"}` : "";
+      if (p.id === src.id) {
+        return (
+          <Tile key={p.id} seat={seat} background={L.panel}>
+            <CommanderCard rot={rot} title={`Commander${which}`} subtitle="damage you've dealt" onReturn={() => setCmd(null)} />
+          </Tile>
+        );
+      }
+      return (
+        <Tile key={p.id} seat={seat} background={dimColor(p.color)} out={p.out}>
+          <Face
+            value={cmdDamage(p, src.id, second)}
+            rot={rot}
+            ink="#FFFFFF"
+            press={press}
+            onDelta={(d) => adjustCmdDmg(p.id, src.id, second, d)}
+            decLabel={`Decrease commander damage from ${src.name}${second ? " (partner)" : ""} to ${p.name}`}
+            incLabel={`Increase commander damage from ${src.name}${second ? " (partner)" : ""} to ${p.name}`}
+            signOpacity={0.35}
+            name={p.name}
+          />
+        </Tile>
+      );
+    }
+
+    // -- reading one seat's commander damage
+    if (cmdTarget) {
+      if (p.id === cmdTarget.id) {
+        return (
+          <Tile key={p.id} seat={seat} background={L.panel}>
+            <CommanderCard rot={rot} onReturn={() => setCmd(null)} />
+          </Tile>
+        );
+      }
+      const faces = p.partner ? [false, true] : [false];
+      return (
+        <Tile key={p.id} seat={seat} background={dimColor(p.color)} out={p.out}>
+          {faces.map((second, k) => (
+            <Face
+              key={second ? "b" : "a"}
+              value={cmdDamage(cmdTarget, p.id, second)}
+              rot={rot}
+              ink="#FFFFFF"
+              press={press}
+              onDelta={(d) => adjustCmdDmg(cmdTarget.id, p.id, second, d)}
+              decLabel={`Decrease commander damage from ${p.name}${second ? " (partner)" : ""} to ${cmdTarget.name}`}
+              incLabel={`Increase commander damage from ${p.name}${second ? " (partner)" : ""} to ${cmdTarget.name}`}
+              signOpacity={0.35}
+              scale={faces.length > 1 ? 0.8 : 1}
+              gap={k ? 4 : 0}
+              name={faces.length > 1 ? `${p.name} ${second ? "B" : "A"}` : p.name}
+            />
+          ))}
+        </Tile>
+      );
+    }
+
+    // -- the ordinary seat
+    const lethal = p.out ? null : lethalReason(p, visibleCounters);
+    const chipArgs = { player: p, table, visibleCounters, commander, lethal };
+    const chipsH = chipsHeightFor(chipArgs);
+    return (
+      <Tile key={p.id} seat={seat} background={panelFor === p.id ? L.panel : bg} out={p.out}>
+        <Face
+          value={p.life}
+          rot={rot}
+          ink={ink}
+          press={press}
+          onDelta={(d) => adjustLife(p.id, d)}
+          decLabel={`${p.name}: decrease life by 1`}
+          incLabel={`${p.name}: increase life by 1`}
+          onCenter={() => setPanelFor(p.id)}
+          centerLabel={`${p.name}: ${p.life} life — seat options`}
+          name={p.out ? `${p.name} · out` : p.name}
+          scale={p.scale || 1}
+          badge={badges[p.id]}
+          chipsHeight={chipsH}
+          chips={
+            chipsH > 0 ? (
+              <SeatChips {...chipArgs} ink={ink} press={press} onCounter={(key, d) => adjustCounter(p.id, key, d)} onCommander={() => setCmd(p.id)} onDeal={(second) => setCmd({ deal: p.id, second })} compact={layoutObj.rows >= 4} />
+            ) : null
+          }
+        />
+        {panelFor === p.id && (
+          <SeatPanel
+            player={p}
+            rot={rot}
+            table={table}
+            commander={commander}
+            onClose={() => setPanelFor(null)}
+            onColor={(c) => patchPlayer(p.id, { color: c })}
+            onKill={() => setOut(p.id, !p.out)}
+            onPartners={() => togglePartner(p.id)}
+            onRename={(name) => patchPlayer(p.id, { name })}
+            onTotal={() => {
+              setPanelFor(null);
+              setKeypad({ id: p.id, digits: "" });
+            }}
+            onCrown={() => claim("monarch", p.id)}
+            onInitiative={() => claim("initiative", p.id)}
+            onCommander={() => {
+              setPanelFor(null);
+              setCmd(p.id);
+            }}
+            onFlip={() => patchPlayer(p.id, { flip: !p.flip })}
+            onReset={() => resetPlayer(p.id)}
+            onScale={(d) => patchPlayer(p.id, { scale: clampScale((p.scale || 1) + d) })}
+          />
+        )}
+      </Tile>
+    );
+  }
+
+  const keypadPlayer = keypad ? players.find((p) => p.id === keypad.id) : null;
 
   return (
     <div
+      data-bw-back="life"
       style={{
         position: "fixed",
         inset: 0,
         zIndex: 95,
-        background: ROOT_BG,
-        display: "flex",
-        flexDirection: "column",
+        background: L.black,
         overflow: "hidden",
+        fontFamily: FONT,
+        color: L.white,
+        userSelect: "none",
+        WebkitUserSelect: "none",
+        WebkitTouchCallout: "none",
+        overscrollBehavior: "none",
       }}
     >
       <style>{`
@@ -223,321 +604,140 @@ export function LifeCounterView({ onExit }) {
         @media (prefers-reduced-motion: reduce) {
           .life-badge, .life-badge.poofing { animation: none; }
         }
+        .life-mini { cursor: pointer; border: none; }
+        @media (pointer: coarse) {
+          .life-mini { width: 30px !important; height: 30px !important; }
+        }
+        button:focus-visible, [role="button"]:focus-visible { outline: 3px solid #fff; outline-offset: -3px; }
       `}</style>
 
-      {/* top bar */}
+      {/* the board: two columns, as many rows as the layout asks for */}
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 14,
-          flexWrap: "wrap",
-          padding: "14px clamp(14px, 4vw, 28px)",
-          borderBottom: `1px solid rgba(185,191,199,0.15)`,
-          flexShrink: 0,
-        }}
-      >
-        <div className="serif" style={{ fontSize: 16, fontWeight: 600, color: C.goldBright }}>
-          Life Counter
-        </div>
-
-        <div style={{ display: "flex", gap: 6 }}>
-          {["commander", "normal"].map((f) => (
-            <button
-              key={f}
-              onClick={() => setFormatAndReset(f)}
-              aria-pressed={format === f}
-              style={{
-                background: format === f ? STOCK_BG : "transparent",
-                color: format === f ? C.stockInk : C.parchmentDim,
-                border: `1px solid ${format === f ? C.stock : "rgba(185,191,199,0.26)"}`,
-                borderRadius: 4,
-                padding: "6px 14px",
-                fontSize: 12.5,
-                fontWeight: 600,
-                cursor: "pointer",
-                textTransform: "capitalize",
-              }}
-            >
-              {f} · {LIFE_STARTING[f]}
-            </button>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.parchmentDim, fontSize: 12.5 }}>
-          <Users size={14} />
-          <button onClick={removePlayer} disabled={players.length <= minPlayers} aria-label="Remove player" style={lifeCountBtn(players.length <= minPlayers)}>
-            −
-          </button>
-          <span className="mono" style={{ color: C.parchment, minWidth: 14, textAlign: "center" }}>
-            {players.length}
-          </span>
-          <button onClick={addPlayer} disabled={players.length >= maxPlayers} aria-label="Add player" style={lifeCountBtn(players.length >= maxPlayers)}>
-            +
-          </button>
-        </div>
-
-        <div style={{ flex: 1 }} />
-
-        <button
-          onClick={newGame}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            background: STOCK_BG,
-            color: C.stockInk,
-            border: "none",
-            borderRadius: 5,
-            padding: "8px 14px",
-            fontWeight: 700,
-            fontSize: 12.5,
-            cursor: "pointer",
-            boxShadow: STOCK_SHADOW,
-          }}
-        >
-          <RotateCcw size={14} /> New Game
-        </button>
-
-        <button
-          onClick={onExit}
-          title="Exit life counter"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            background: "transparent",
-            color: C.parchmentDim,
-            border: `1px solid rgba(185,191,199,0.26)`,
-            borderRadius: 5,
-            padding: "8px 12px",
-            fontWeight: 600,
-            fontSize: 12.5,
-            cursor: "pointer",
-          }}
-        >
-          <X size={14} /> Exit
-        </button>
-      </div>
-
-      {/* player grid — fills the remaining screen */}
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
+          position: "absolute",
+          inset: 0,
           display: "grid",
-          gridTemplateColumns: `repeat(${cols}, 1fr)`,
-          gridTemplateRows: `repeat(${rows}, 1fr)`,
-          gap: 1,
-          background: "rgba(185,191,199,0.15)",
-          overflow: "auto",
+          gap: GAP,
+          gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+          gridTemplateRows: `repeat(${layoutObj.rows}, minmax(0, 1fr))`,
+          paddingTop: "env(safe-area-inset-top)",
+          paddingBottom: "env(safe-area-inset-bottom)",
+          paddingLeft: "env(safe-area-inset-left)",
+          paddingRight: "env(safe-area-inset-right)",
+          boxSizing: "border-box",
         }}
       >
-        {players.map((p) => {
-          const start = LIFE_STARTING[format];
-          const lethal = Object.values(p.cmdDmg).some((v) => v >= 21);
-          const badge = badges[p.id];
-          return (
-            <div
-              key={p.id}
-              style={{
-                background: C.bg,
-                padding: "14px clamp(12px, 2.5vw, 20px) 16px",
-                transform: rotated[p.id] ? "rotate(180deg)" : "none",
-                transition: "transform 0.25s ease",
-                display: "flex",
-                flexDirection: "column",
-                // A grid cell won't shrink its content below intrinsic size on
-                // its own — min-width/min-height:0 lets flex children actually
-                // shrink to fit, and overflow:hidden is the backstop so an
-                // expanded commander-damage list (or anything else) can never
-                // visually spill into a neighboring cell, whatever the cause.
-                minHeight: 0,
-                minWidth: 0,
-                // Horizontal clipping is a hard rule — a cell must never bleed
-                // into a neighboring column. Vertical scroll is a fallback for
-                // real edge cases (many players, expanded commander damage on
-                // a short window) so damage tracking degrades into a scrollbar
-                // rather than silently losing information.
-                overflowX: "hidden",
-                overflowY: "auto",
-                boxShadow: lethal ? "inset 0 0 0 2px rgba(222,115,134,0.5)" : "none",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexShrink: 0 }}>
-                <input
-                  value={p.name}
-                  onChange={(e) => renamePlayer(p.id, e.target.value)}
-                  aria-label="Player name"
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    borderBottom: `1px solid rgba(185,191,199,0.25)`,
-                    color: C.parchment,
-                    fontSize: 13,
-                    fontWeight: 600,
-                    padding: "2px 0",
-                    width: "60%",
-                  }}
-                />
-                <div style={{ display: "flex", gap: 2 }}>
-                  <button onClick={() => setRotated((r) => ({ ...r, [p.id]: !r[p.id] }))} style={lifeIconBtn} title="Flip for the seat across the table" aria-label="Flip for the seat across the table">
-                    <RotateCw size={13} color={C.parchmentDim} />
-                  </button>
-                  <button onClick={() => resetPlayer(p.id)} style={lifeIconBtn} title="Reset this player" aria-label={`Reset ${p.name}`}>
-                    <RotateCcw size={13} color={C.parchmentDim} />
-                  </button>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  flex: 1,
-                  minHeight: 0,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  position: "relative",
-                }}
-              >
-                {badge && (
-                  <div
-                    className={`life-badge${badge.fading ? " poofing" : ""}`}
-                    style={{
-                      position: "absolute",
-                      top: "8%",
-                      left: "50%",
-                      transform: "translateX(-50%)",
-                      pointerEvents: "none",
-                      zIndex: 2,
-                    }}
-                  >
-                    <span
-                      className="mono"
-                      style={{
-                        display: "inline-block",
-                        fontSize: "clamp(18px, 3vw, 26px)",
-                        fontWeight: 700,
-                        padding: "2px 12px",
-                        borderRadius: 20,
-                        background: badge.amount < 0 ? "rgba(222,115,134,0.16)" : "rgba(132,199,160,0.16)",
-                        color: badge.amount < 0 ? C.redBright : C.greenBright,
-                        border: `1px solid ${badge.amount < 0 ? "rgba(222,115,134,0.4)" : "rgba(132,199,160,0.4)"}`,
-                      }}
-                    >
-                      {badge.amount > 0 ? "+" : ""}
-                      {badge.amount}
-                    </span>
-                  </div>
-                )}
-
-                <div
-                  onClick={() => adjustLife(p.id, 1)}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`${p.name}: increase life by 1 (currently ${p.life})`}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      adjustLife(p.id, 1);
-                    }
-                  }}
-                  style={{ cursor: "pointer", textAlign: "center", userSelect: "none" }}
-                >
-                  <span
-                    className="mono"
-                    style={{
-                      fontSize: numberFontSize,
-                      fontWeight: 700,
-                      color: p.life <= 0 ? C.redBright : p.life < start / 2 ? "#E8B34C" : C.goldBright,
-                      lineHeight: 1,
-                    }}
-                  >
-                    {p.life}
-                  </span>
-                </div>
-                <div
-                  onClick={() => adjustLife(p.id, -1)}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`${p.name}: decrease life by 1`}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      adjustLife(p.id, -1);
-                    }
-                  }}
-                  style={{ cursor: "pointer", textAlign: "center", padding: "4px 0 0", fontSize: 10, color: C.parchmentDim, userSelect: "none" }}
-                >
-                  tap number for +1 · tap here for −1
-                </div>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: format === "commander" ? 8 : 0, flexShrink: 0 }}>
-                <button onClick={() => adjustLife(p.id, -5)} aria-label={`${p.name}: decrease life by 5`} style={lifeStepBtn}>−5</button>
-                <button onClick={() => adjustLife(p.id, -1)} aria-label={`${p.name}: decrease life by 1`} style={lifeStepBtn}>−1</button>
-                <button onClick={() => adjustLife(p.id, 1)} aria-label={`${p.name}: increase life by 1`} style={lifeStepBtn}>+1</button>
-                <button onClick={() => adjustLife(p.id, 5)} aria-label={`${p.name}: increase life by 5`} style={lifeStepBtn}>+5</button>
-              </div>
-
-              {format === "commander" && (
-                <div style={{ borderTop: `1px solid rgba(185,191,199,0.15)`, paddingTop: 8, flexShrink: 0 }}>
-                  <button
-                    onClick={() => setExpanded((e) => (e === p.id ? null : p.id))}
-                    aria-expanded={expanded === p.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      background: "none",
-                      border: "none",
-                      color: lethal ? C.redBright : C.parchmentDim,
-                      fontSize: 11.5,
-                      cursor: "pointer",
-                      padding: "2px 0",
-                      width: "100%",
-                    }}
-                  >
-                    <Swords size={12} />
-                    Commander damage{lethal ? " — LETHAL" : ""}
-                    <ChevronDown size={12} style={{ marginLeft: "auto", transform: expanded === p.id ? "rotate(180deg)" : "none" }} />
-                  </button>
-                  {expanded === p.id && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 6, maxHeight: cols === 3 ? 84 : 110, overflowY: "auto" }}>
-                      {players.filter((o) => o.id !== p.id).map((o) => {
-                        const dmg = p.cmdDmg[o.id] || 0;
-                        return (
-                          <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11.5, color: C.parchmentDim }}>
-                            <span style={{ maxWidth: "50%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              from {o.name}
-                            </span>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              <button onClick={() => adjustCmdDmg(p.id, o.id, -1)} aria-label={`Decrease commander damage from ${o.name} to ${p.name}`} style={lifeTinyBtn}>−</button>
-                              <span className="mono" style={{ color: dmg >= 21 ? C.redBright : C.parchment, minWidth: 16, textAlign: "center" }}>
-                                {dmg}
-                              </span>
-                              <button onClick={() => adjustCmdDmg(p.id, o.id, 1)} aria-label={`Increase commander damage from ${o.name} to ${p.name}`} style={lifeTinyBtn}>+</button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {players.map(renderSeat)}
       </div>
+
+      {roll && (
+        <div
+          aria-live="polite"
+          style={{ ...pill("plain", { position: "absolute", left: "50%", bottom: "calc(18px + env(safe-area-inset-bottom))", transform: "translateX(-50%)", zIndex: 25, background: "rgba(0,0,0,0.85)", pointerEvents: "none" }) }}
+        >
+          {roll.winnerName ? `${roll.winnerName} starts` : "Tied — roll again"}
+        </div>
+      )}
+
+      {/* the menu has its own close button, and the hub would sit on top of it */}
+      {!menuOpen && <Hub mode={hubMode} onClick={onHub} dayNight={table.dayNight} />}
+
+      {menuOpen && (
+        <MenuPanel
+          format={format}
+          onFormat={(f) => setFormatAndReset(f)}
+          count={players.length}
+          minPlayers={minPlayers}
+          maxPlayers={maxPlayers}
+          onAdd={() => resizeTable(players.length + 1)}
+          onRemove={() => resizeTable(players.length - 1)}
+          onLayout={() => {
+            setMenuOpen(false);
+            setPicker(true);
+          }}
+          dayNight={table.dayNight}
+          onDayNight={cycleDayNight}
+          onDice={() => {
+            setMenuOpen(false);
+            setDice({ last: null, history: [] });
+          }}
+          onWhoStarts={startRoll}
+          onUndo={() => {
+            undo();
+            setMenuOpen(false);
+          }}
+          undoDepth={undoDepth}
+          onLog={() => {
+            setMenuOpen(false);
+            setShowLog(true);
+          }}
+          hasDecks={decks.length > 0}
+          deckAssigned={players.some((p) => p.deckId)}
+          onDecks={() => {
+            setMenuOpen(false);
+            setAssigning(true);
+          }}
+          visibleCounters={visibleCounters}
+          onToggleCounter={toggleCounter}
+          onNewGame={() => {
+            newGame();
+            setMenuOpen(false);
+          }}
+          onExit={onExit}
+          onClose={() => setMenuOpen(false)}
+        />
+      )}
+
+      {picker && <LayoutPicker current={layoutObj.id} format={format} maxPlayers={maxPlayers} onPick={applyLayout} onClose={() => setPicker(false)} />}
+
+      {keypadPlayer && (
+        <KeypadModal
+          player={keypadPlayer}
+          digits={keypad.digits}
+          setDigits={(fn) => setKeypad((k) => ({ ...k, digits: typeof fn === "function" ? fn(k.digits) : fn }))}
+          onAdjust={(d) => {
+            adjustLife(keypadPlayer.id, d);
+            setKeypad(null);
+          }}
+          onSet={(v) => {
+            setLifeTotal(keypadPlayer.id, v);
+            setKeypad(null);
+          }}
+          onClose={() => setKeypad(null)}
+        />
+      )}
+
+      {dice && <DiceModal dice={dice} onRoll={doRoll} onFlip={doFlip} onWhoStarts={startRoll} onClose={() => setDice(null)} />}
+
+      {showLog && (
+        <LogModal
+          log={log}
+          undoDepth={undoDepth}
+          onUndo={() => {
+            undo();
+            setShowLog(false);
+          }}
+          onClose={() => setShowLog(false)}
+        />
+      )}
+
+      {assigning && <DecksModal players={players} decks={decks} onAssign={assignDeck} onClose={() => setAssigning(false)} />}
+
+      {winner && !winnerSeen && (
+        <WinnerModal
+          winner={winner}
+          recording={!!onRecordGame && players.some((p) => p.deckId)}
+          onNewGame={() => {
+            fileResult();
+            setWinnerSeen(true);
+            newGame();
+          }}
+          onKeep={() => {
+            fileResult();
+            setWinnerSeen(true);
+          }}
+        />
+      )}
     </div>
   );
 }
-
-// When a Glossary search comes up empty, tell the person WHY rather than
-// leaving them to guess whether it's a bug or they just don't own such a
-// card. Checks the raw scanned text directly, bypassing the keyword list
-// entirely, so it answers the question honestly either way. Pulled out as
-// its own pure function (not inline in the component) so the logic can be
-// tested directly against known inputs, independent of simulating a search
-// box interaction.

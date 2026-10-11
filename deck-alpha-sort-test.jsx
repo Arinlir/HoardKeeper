@@ -10,7 +10,6 @@ globalThis.localStorage = dom.window.localStorage;
 globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-localStorage.setItem("lf-profile", JSON.stringify({ name: "michael", pin: "" }));
 
 const cards = [
   { id: "cmd1", name: "Galadriel, Elven-Queen", set: "ltc", collectorNumber: "3", scryfallId: "gala", quantity: 1, usd: 5, colors: ["G", "U"], rarity: "mythic", typeLine: "Legendary Creature", collectionId: "uncategorized", added: 1 },
@@ -40,8 +39,9 @@ const decks = [
 ];
 globalThis.fetch = (url) => {
   const u = String(url);
-  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "pin" }) });
-  if (u.includes("/api/store/michael"))
+  if (u.includes("/api/auth/me")) return Promise.resolve({ ok: true, json: async () => ({ user: { id: 1, email: "michael@example.com", verified: true, handle: "michael" } }) });
+  if (u.includes("/api/health")) return Promise.resolve({ ok: true, json: async () => ({ ok: true, mode: "accounts" }) });
+  if (u.includes("/api/store"))
     return Promise.resolve({ ok: true, json: async () => ({ value: JSON.stringify({ collections: [], cards, decks }) }) });
   if (u.includes("api.scryfall.com/cards/collection"))
     return Promise.resolve({ ok: true, json: async () => ({ data: [] }) });
@@ -70,7 +70,21 @@ await act(async () => { deckCard.dispatchEvent(new dom.window.MouseEvent("click"
 await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
 
 // --- Cards (gallery) view: default view when opening a deck ---
+const sortBtn = (label) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
+const clickBtn = async (b) => { await act(async () => { b.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); }); };
+
+// default is grouped by type: commander, creatures, artifacts, then lands
 let bodyText = document.body.textContent;
+check(
+  "Cards view (By type, default): commander, creatures A-Z, artifacts, lands",
+  bodyText.indexOf("Galadriel") < bodyText.indexOf("Zombie Apprentice") &&
+  bodyText.indexOf("Zombie Apprentice") < bodyText.indexOf("Amulet of Vigor") &&
+  bodyText.indexOf("Amulet of Vigor") < bodyText.indexOf("Mystic Sanctuary")
+);
+check("By type shows section headings", /Creatures · /.test(bodyText) && /Artifacts · /.test(bodyText) && /Lands · /.test(bodyText));
+
+await clickBtn(sortBtn("A–Z"));
+bodyText = document.body.textContent;
 check(
   "Cards view: commander first, then alphabetical (Galadriel, Amulet, Mystic, Zombie)",
   bodyText.indexOf("Galadriel") < bodyText.indexOf("Amulet of Vigor") &&

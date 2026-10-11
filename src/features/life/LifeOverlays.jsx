@@ -1,11 +1,13 @@
 /*
  * Everything that sits on top of the board: the hexagon hub, the menu it opens,
- * the layout picker, and the small modals (exact total, dice, log, decks, the
+ * the layout picker, and the small modals (exact total, dice, log, commanders, the
  * winner). They share the dark rounded panel and the big round buttons.
  */
-import React from "react";
-import { Coins, Dices, LayoutGrid, LibraryBig, LogOut, Menu, Moon, RotateCcw, ScrollText, Sun, Sword, Trophy, Undo2, Users, X } from "lucide-react";
-import { COUNTERS, DICE, LIFE_STARTING, facingOf, layoutsFor } from "./lifeState";
+import React, { useEffect, useState } from "react";
+import { BarChart3, Check, Coins, Dices, LayoutGrid, LogOut, Menu, Moon, RotateCcw, ScrollText, Shield, Sun, Sword, Trophy, Undo2, Users, X } from "lucide-react";
+import { COUNTERS, DICE, LIFE_STARTING, clearGames, facingOf, layoutsFor, lifeStats, loadGames } from "./lifeState";
+import { scryfallSearch } from "../../lib/scryfall";
+import { fetchServerGames, pushGames } from "./lifeSync";
 import { FONT, L, NUMBER_FONT, OVERLAY, PANEL, labelStyle, pill, roundBtn } from "./lifeUi";
 
 // ---- the hub ---------------------------------------------------------------
@@ -68,7 +70,7 @@ function Tool({ icon, label, onClick, on, disabled, ariaLabel, title }) {
   );
 }
 
-export function MenuPanel({ format, onFormat, count, minPlayers, maxPlayers, onAdd, onRemove, onLayout, dayNight, onDayNight, onDice, onWhoStarts, onUndo, undoDepth, onLog, hasDecks, deckAssigned, onDecks, visibleCounters, onToggleCounter, onNewGame, onExit, onClose }) {
+export function MenuPanel({ format, onFormat, count, minPlayers, maxPlayers, onAdd, onRemove, onLayout, dayNight, onDayNight, onDice, onWhoStarts, onUndo, undoDepth, onLog, commanderSet, onCommanders, onStats, visibleCounters, onToggleCounter, onNewGame, onExit, onClose }) {
   const sectionLabel = { ...labelStyle, color: L.dim, marginBottom: 10 };
   return (
     <div style={{ ...OVERLAY, zIndex: 20, background: "rgba(0,0,0,0.8)" }} onClick={onClose}>
@@ -108,7 +110,8 @@ export function MenuPanel({ format, onFormat, count, minPlayers, maxPlayers, onA
           />
           <Tool icon={<Undo2 size={25} />} label="Undo" ariaLabel="Undo" onClick={onUndo} disabled={undoDepth === 0} />
           <Tool icon={<ScrollText size={25} />} label="Log" ariaLabel="Log" onClick={onLog} />
-          {hasDecks && <Tool icon={<LibraryBig size={25} />} label="Decks" ariaLabel="Decks" on={deckAssigned} onClick={onDecks} title="Who's playing which deck" />}
+          <Tool icon={<Shield size={25} />} label="Commander" ariaLabel="Commander" on={commanderSet} onClick={onCommanders} title="Who's playing which commander" />
+          <Tool icon={<BarChart3 size={25} />} label="Stats" ariaLabel="Stats" onClick={onStats} title="Winners and games played" />
         </div>
 
         <div style={sectionLabel}>Track</div>
@@ -304,30 +307,226 @@ export function LogModal({ log, undoDepth, onUndo, onClose }) {
   );
 }
 
-// ---- decks -----------------------------------------------------------------
+// ---- commanders ------------------------------------------------------------
 
-export function DecksModal({ players, decks, onAssign, onClose }) {
+/*
+ * Whatever commander each seat is playing, typed in. It is deliberately not a
+ * pick from the collection — most of the table is playing something that isn't
+ * in it. A seat whose own name hasn't been filled in takes the commander's name.
+ */
+const squash = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+// A two-faced card is known by either face; the seat gets the front one.
+const frontFace = (name) => String(name || "").split(" // ")[0];
+
+/*
+ * One seat's commander. Typing is free — any text is kept — but it is checked
+ * against real cards as you go: matching legendary cards are offered as buttons
+ * (tap one for the exact spelling), and the box says whether what's typed is a
+ * real card. No answer (offline) says nothing rather than something wrong.
+ */
+function CommanderField({ seat, index, onCommander }) {
+  const text = (seat.commander || "").trim();
+  const [found, setFound] = useState({ for: "", legends: [], exactCard: null, state: "idle" });
+  useEffect(() => {
+    if (text.length < 3) {
+      setFound({ for: text, legends: [], exactCard: null, state: "idle" });
+      return undefined;
+    }
+    let live = true;
+    const t = setTimeout(async () => {
+      try {
+        // Legendary cards for the suggestions; the exact name on its own, of any
+        // kind, so a card that isn't legendary can still be told apart from a typo.
+        const [legends, exact] = await Promise.all([
+          scryfallSearch(`t:legendary ${text}`, "cards", 175).catch(() => []),
+          scryfallSearch(`!"${text.replace(/"/g, "")}"`, "cards", 5).catch(() => []),
+        ]);
+        if (live) setFound({ for: text, legends, exactCard: exact[0] || null, state: "done" });
+      } catch (e) {
+        if (live) setFound({ for: text, legends: [], exactCard: null, state: "offline" });
+      }
+    }, 300);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [text]);
+  const current = found.for === text && found.state === "done";
+  const sameName = (n) => squash(frontFace(n)) === squash(frontFace(text));
+  const hit = current ? found.legends.find((c) => sameName(c.name)) || (found.exactCard && sameName(found.exactCard.name) ? found.exactCard : null) : null;
+  const real = !!hit;
+  const commanderOk = !!hit && hit.canBeCommander !== false;
+  const names = current ? [...new Set(found.legends.filter((c) => c.canBeCommander).map((c) => frontFace(c.name)))] : [];
+  const offered = current && !commanderOk ? names.filter((n) => !sameName(n) || !real).slice(0, 5) : [];
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <label style={{ ...labelStyle, display: "block", marginBottom: 6 }} htmlFor={`life-cmdr-${seat.id}`}>
+        Seat {index + 1}
+      </label>
+      <input
+        id={`life-cmdr-${seat.id}`}
+        value={seat.commander || ""}
+        onChange={(e) => onCommander(seat.id, e.target.value)}
+        placeholder="Commander"
+        aria-label={`Seat ${index + 1} commander`}
+        maxLength={60}
+        autoComplete="off"
+        style={{ width: "100%", boxSizing: "border-box", background: L.well, color: L.white, border: "none", borderRadius: 14, padding: "12px 14px", fontFamily: FONT, fontWeight: 700, fontSize: 15, outline: "none" }}
+      />
+      {commanderOk && (
+        <div role="status" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12, fontWeight: 700, color: L.yellow }}>
+          <Check size={14} strokeWidth={3} /> Real card
+        </div>
+      )}
+      {current && real && !commanderOk && (
+        <div role="status" style={{ marginTop: 6, fontSize: 12, color: L.dim }}>
+          That's a real card, but it can't be a commander — kept as typed
+        </div>
+      )}
+      {current && !real && (
+        <div role="status" style={{ marginTop: 6, fontSize: 12, color: L.dim }}>
+          {names.length ? "Pick the card, or keep it as typed" : "No card by that name — kept as typed"}
+        </div>
+      )}
+      {offered.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+          {offered.map((n) => (
+            <button key={n} aria-label={`Seat ${index + 1} use ${n}`} onClick={() => onCommander(seat.id, n)} style={pill("plain", { padding: "8px 12px", fontSize: 11.5, whiteSpace: "normal", textAlign: "left" })}>
+              {n}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function CommanderModal({ players, onCommander, onClose }) {
   return (
     <div style={OVERLAY} onClick={onClose}>
-      <div style={{ ...PANEL, maxWidth: 460 }} role="dialog" aria-modal="true" aria-label="Assign decks to seats" onClick={(e) => e.stopPropagation()}>
+      <div style={{ ...PANEL, maxWidth: 460 }} role="dialog" aria-modal="true" aria-label="Commanders" onClick={(e) => e.stopPropagation()}>
         <Header title="Who's playing what" onClose={onClose} />
         <div style={{ fontSize: 12.5, color: L.dim, marginBottom: 14, lineHeight: 1.5 }}>
-          Name the deck in each seat and the result of this game lands on its record — wins, losses and who it beat. Seats you leave blank are still counted as players, just not as decks.
+          Type the commander in each seat — it's checked against real cards, but it doesn't have to be in your collection. A seat whose name isn't filled in takes the commander's name.
         </div>
-        {players.map((p) => (
-          <div key={p.id} style={{ marginBottom: 14 }}>
-            <div style={{ ...labelStyle, marginBottom: 6 }}>{p.name}</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              <button onClick={() => onAssign(p.id, null)} aria-pressed={!p.deckId} style={pill(!p.deckId ? "on" : "plain", { padding: "8px 13px", fontSize: 11.5 })}>None</button>
-              {decks.map((d) => (
-                <button key={d.id} onClick={() => onAssign(p.id, d)} aria-pressed={p.deckId === d.id} style={pill(p.deckId === d.id ? "on" : "plain", { padding: "8px 13px", fontSize: 11.5, textTransform: "none", letterSpacing: "0.02em" })}>
-                  {d.name}
-                </button>
-              ))}
-            </div>
-          </div>
+        {players.map((p, i) => (
+          <CommanderField key={p.id} seat={p} index={i} onCommander={onCommander} />
         ))}
         <button onClick={onClose} style={pill("go", { width: "100%", padding: "14px 0", marginTop: 4 })}>Done</button>
+      </div>
+    </div>
+  );
+}
+
+// ---- stats -----------------------------------------------------------------
+
+function Board({ title, rows, empty }) {
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ ...labelStyle, color: L.dim, marginBottom: 8 }}>{title}</div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: L.dim }}>{empty}</div>
+      ) : (
+        rows.map((r) => (
+          <div key={r.name} style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "9px 12px", background: L.well, borderRadius: 12, marginBottom: 6 }}>
+            <span style={{ flex: 1, fontWeight: 800, fontSize: 14, minWidth: 0, overflowWrap: "anywhere" }}>{r.name}</span>
+            <span className="mono" style={{ fontFamily: NUMBER_FONT, fontWeight: 800, fontSize: 15, color: L.yellow }}>{r.wins}</span>
+            <span style={{ fontSize: 11.5, color: L.dim, whiteSpace: "nowrap" }}>
+              {r.wins === 1 ? "win" : "wins"} · {r.games} {r.games === 1 ? "game" : "games"} · {r.rate}%
+            </span>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+export function StatsModal({ onClose }) {
+  const [scope, setScope] = useState("device"); // device | server
+  const [games, setGames] = useState(loadGames);
+  const [server, setServer] = useState({ state: "idle", games: [] }); // idle | loading | ready | unavailable
+  const [sure, setSure] = useState(false);
+  useEffect(() => {
+    if (scope !== "server") return undefined;
+    let live = true;
+    setServer((s) => ({ ...s, state: "loading" }));
+    (async () => {
+      await pushGames();
+      const g = await fetchServerGames();
+      if (live) setServer(g ? { state: "ready", games: g } : { state: "unavailable", games: [] });
+    })();
+    return () => {
+      live = false;
+    };
+  }, [scope]);
+  const shown = scope === "server" ? server.games : games;
+  const stats = lifeStats(shown);
+  const day = (t) => new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  const waiting = scope === "server" && (server.state === "loading" || server.state === "idle");
+  const unavailable = scope === "server" && server.state === "unavailable";
+  return (
+    <div style={OVERLAY} onClick={onClose}>
+      <div style={{ ...PANEL, maxWidth: 460 }} role="dialog" aria-modal="true" aria-label="Stats" onClick={(e) => e.stopPropagation()}>
+        <Header title="Stats" onClose={onClose} />
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          {[
+            ["device", "This device"],
+            ["server", "Whole server"],
+          ].map(([k, label]) => (
+            <button key={k} onClick={() => { setScope(k); setSure(false); }} aria-pressed={scope === k} style={pill(scope === k ? "on" : "plain", { flex: 1, padding: "11px 6px" })}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {waiting ? (
+          <div style={{ fontSize: 13, color: L.dim, marginBottom: 6 }}>Loading the server's games…</div>
+        ) : unavailable ? (
+          <div style={{ fontSize: 13, color: L.dim, lineHeight: 1.5, marginBottom: 6 }}>
+            Couldn't reach the server's stats. They need you to be signed in and online — this device's own games are under "This device".
+          </div>
+        ) : stats.games === 0 ? (
+          <div style={{ fontSize: 13, color: L.dim, lineHeight: 1.5, marginBottom: 6 }}>
+            No finished games yet. When all but one player are out, the win is kept here — by player name where one is filled in, and by commander.
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 12.5, color: L.dim, marginBottom: 14 }}>
+              {stats.games} finished {stats.games === 1 ? "game" : "games"}{scope === "server" ? " across everyone on this server" : ""}. Seats with no name filled in are left out of the player list.
+            </div>
+            <Board title="Players" rows={stats.players} empty="No named players yet — fill in a seat's name to see it here." />
+            <Board title="Commanders" rows={stats.commanders} empty="No commanders typed in yet." />
+            <div style={{ ...labelStyle, color: L.dim, marginBottom: 8 }}>Recent games</div>
+            {stats.recent.map((g) => (
+              <div key={g.id} style={{ fontSize: 12.5, lineHeight: 1.45, padding: "7px 0", borderTop: `1px solid ${L.line}` }}>
+                <span style={{ color: L.dim }}>{day(g.at)} · </span>
+                <b>{g.winnerName}</b>
+                {(() => {
+                  const w = (g.seats || []).find((s) => s.won);
+                  return w && w.commander && w.commander !== g.winnerName ? <span style={{ color: L.dim }}> with {w.commander}</span> : null;
+                })()}
+                <span style={{ color: L.dim }}> beat {(g.seats || []).filter((s) => !s.won).map((s) => s.name).join(", ")}</span>
+              </div>
+            ))}
+          </>
+        )}
+        <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+          <button onClick={onClose} style={pill("go", { flex: 1, padding: "14px 0" })}>Done</button>
+          {scope === "device" && games.length > 0 &&
+            (sure ? (
+              <button
+                onClick={() => {
+                  clearGames();
+                  setGames([]);
+                  setSure(false);
+                }}
+                style={pill("danger", { padding: "14px 16px" })}
+              >
+                Really clear?
+              </button>
+            ) : (
+              <button onClick={() => setSure(true)} style={pill("ghost", { padding: "14px 16px" })}>Clear history</button>
+            ))}
+        </div>
       </div>
     </div>
   );
@@ -343,7 +542,7 @@ export function WinnerModal({ winner, recording, onNewGame, onKeep }) {
         <div style={{ ...labelStyle, fontSize: 24, letterSpacing: "0.02em" }}>{winner.name} wins</div>
         <div style={{ fontSize: 13, color: L.dim, marginTop: 8, lineHeight: 1.5 }}>
           Everyone else is out. {winner.name} finished on {winner.life} life.
-          {recording && <span style={{ display: "block", marginTop: 4 }}>Going in the record{winner.deckName ? ` for ${winner.deckName}` : ""}.</span>}
+          {recording && <span style={{ display: "block", marginTop: 4 }}>Going in the record{winner.commander ? ` for ${winner.commander}` : ""}.</span>}
         </div>
         <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
           <button onClick={onNewGame} style={pill("go", { flex: 1, padding: "14px 0" })}>New game</button>

@@ -15,6 +15,7 @@ import {
   facingOf,
   flipCoin,
   gameResult,
+  saveGame,
   highRoll,
   inkFor,
   layoutById,
@@ -23,12 +24,15 @@ import {
   makeLifePlayer,
   rollDie,
   rollsById,
+  seatLabel,
   seatBackground,
   winnerOf,
+  withCommander,
   STARS_THEME,
 } from "./lifeState";
 import { CommanderCard, Face, SeatChips, SeatPanel, Tile, chipsHeightFor } from "./LifeSeat";
-import { DecksModal, DiceModal, Hub, KeypadModal, LayoutPicker, LogModal, MenuPanel, WinnerModal } from "./LifeOverlays";
+import { pushGames } from "./lifeSync";
+import { CommanderModal, DiceModal, Hub, KeypadModal, LayoutPicker, LogModal, MenuPanel, StatsModal, WinnerModal } from "./LifeOverlays";
 import { FONT, GAP, L, pill, useHold } from "./lifeUi";
 
 // Re-exported so anything that imported these from the view still can.
@@ -37,15 +41,15 @@ export { LIFE_STARTING, LIFE_STORAGE_KEY, makeLifePlayer, loadSavedLife };
 const flipRot = (r) => (r === 0 ? 180 : r === 180 ? 0 : -r);
 
 /*
- * `decks` and `onRecordGame` are the only things this screen knows about the
- * rest of the app, and they arrive as props on purpose: the Life Counter still
- * imports nothing from the collection, decks or storage layers.
+ * `onRecordGame` is the only thing this screen knows about the rest of the
+ * app, and it arrives as a prop on purpose: the Life Counter still imports
+ * nothing from the collection, decks or storage layers.
  *
  * The board is full-bleed: coloured seats on black, a hexagon where their
  * corners meet, and nothing else. Everything that isn't a life total — the
  * format, the layout, dice, counters, undo, exit — lives behind the hub.
  */
-export function LifeCounterView({ onExit, decks = [], onRecordGame }) {
+export function LifeCounterView({ onExit, onRecordGame }) {
   const idRef = useRef(1);
   const saved0 = useRef(undefined);
   if (saved0.current === undefined) saved0.current = loadSavedLife();
@@ -79,9 +83,10 @@ export function LifeCounterView({ onExit, decks = [], onRecordGame }) {
   const [roll, setRoll] = useState(null); // the who-starts roll, while it's up
   const [showLog, setShowLog] = useState(false);
   const [dice, setDice] = useState(null); // null | { last, history }
-  const [assigning, setAssigning] = useState(false);
+  const [naming, setNaming] = useState(false); // the who's-playing-what sheet
   const [keypad, setKeypad] = useState(null); // null | { id, digits }
   const [winnerSeen, setWinnerSeen] = useState(false);
+  const [showStats, setShowStats] = useState(false);
 
   const startedAt = useRef(Date.now());
   const recorded = useRef(false);
@@ -133,7 +138,7 @@ export function LifeCounterView({ onExit, decks = [], onRecordGame }) {
       if (picker) return setPicker(false);
       if (dice) return setDice(null);
       if (showLog) return setShowLog(false);
-      if (assigning) return setAssigning(false);
+      if (naming) return setNaming(false);
       if (menuOpen) return setMenuOpen(false);
       if (panelFor !== null) return setPanelFor(null);
       if (cmd !== null) return setCmd(null);
@@ -142,7 +147,7 @@ export function LifeCounterView({ onExit, decks = [], onRecordGame }) {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onExit, keypad, picker, dice, showLog, assigning, menuOpen, panelFor, cmd, roll]);
+  }, [onExit, keypad, picker, dice, showLog, naming, menuOpen, panelFor, cmd, roll]);
 
   function bumpBadge(id, delta) {
     setBadges((b) => {
@@ -254,39 +259,24 @@ export function LifeCounterView({ onExit, decks = [], onRecordGame }) {
 
   // Filed once per game, whichever button the winner screen is dismissed with.
   function fileResult() {
-    if (recorded.current || !onRecordGame) return;
+    if (recorded.current) return;
     recorded.current = true;
-    onRecordGame(gameResult(players, { format, startedAt: startedAt.current }));
+    const result = gameResult(players, { format, startedAt: startedAt.current });
+    saveGame(result);
+    pushGames();
+    if (onRecordGame) onRecordGame(result);
   }
 
-  function assignDeck(id, deck) {
-    // A deck with two commanders (partners, a Background, a Doctor's companion…)
-    // turns the seat's Partners switch on, so commander damage is counted for
-    // each of them; a one-commander deck turns it off and forgets the second's
-    // damage, same as flipping the switch by hand. Picking "None" leaves it be.
-    const second = cmdKey(id, true);
-    setPlayers((ps) =>
-      ps.map((p) => {
-        if (p.id !== id) return p;
-        const next = { ...p, deckId: deck?.id || null, deckName: deck?.name || null };
-        if (!deck) return next;
-        next.partner = !!deck.partnerId;
-        if (!next.partner && second in (next.cmdDmg || {})) {
-          const { [second]: _dropped, ...rest } = next.cmdDmg;
-          next.cmdDmg = rest;
-        }
-        return next;
-      })
-    );
-    if (deck) note(`${players.find((p) => p.id === id)?.name || "A player"} is on ${deck.name}${deck.partnerId ? " (two commanders)" : ""}`);
+  function setCommander(id, text) {
+    setPlayers((ps) => ps.map((p, i) => (p.id === id ? withCommander(p, i, text) : p)));
   }
 
   function newGame() {
     remember();
     const start = LIFE_STARTING[format];
-    // Decks, colours and names stay put: the same table usually plays another
-    // game with the same decks, and re-picking five of them every time would be
-    // a chore.
+    // Commanders, colours and names stay put: the same table usually plays
+    // another game with the same commanders, and typing five of them every time
+    // would be a chore.
     setPlayers((ps) => ps.map((p) => ({ ...p, life: start, cmdDmg: {}, counters: {}, out: false, outAt: null })));
     startedAt.current = Date.now();
     recorded.current = false;
@@ -530,7 +520,7 @@ export function LifeCounterView({ onExit, decks = [], onRecordGame }) {
           incLabel={`${p.name}: increase life by 1`}
           onCenter={() => setPanelFor(p.id)}
           centerLabel={`${p.name}: ${p.life} life — seat options`}
-          name={p.out ? `${p.name} · out` : p.name}
+          name={seatLabel(p)}
           scale={p.scale || 1}
           badge={badges[p.id]}
           chipsHeight={chipsH}
@@ -671,11 +661,14 @@ export function LifeCounterView({ onExit, decks = [], onRecordGame }) {
             setMenuOpen(false);
             setShowLog(true);
           }}
-          hasDecks={decks.length > 0}
-          deckAssigned={players.some((p) => p.deckId)}
-          onDecks={() => {
+          commanderSet={players.some((p) => (p.commander || "").trim())}
+          onCommanders={() => {
             setMenuOpen(false);
-            setAssigning(true);
+            setNaming(true);
+          }}
+          onStats={() => {
+            setMenuOpen(false);
+            setShowStats(true);
           }}
           visibleCounters={visibleCounters}
           onToggleCounter={toggleCounter}
@@ -687,6 +680,8 @@ export function LifeCounterView({ onExit, decks = [], onRecordGame }) {
           onClose={() => setMenuOpen(false)}
         />
       )}
+
+      {showStats && <StatsModal onClose={() => setShowStats(false)} />}
 
       {picker && <LayoutPicker current={layoutObj.id} format={format} maxPlayers={maxPlayers} onPick={applyLayout} onClose={() => setPicker(false)} />}
 
@@ -721,12 +716,12 @@ export function LifeCounterView({ onExit, decks = [], onRecordGame }) {
         />
       )}
 
-      {assigning && <DecksModal players={players} decks={decks} onAssign={assignDeck} onClose={() => setAssigning(false)} />}
+      {naming && <CommanderModal players={players} onCommander={setCommander} onClose={() => setNaming(false)} />}
 
       {winner && !winnerSeen && (
         <WinnerModal
           winner={winner}
-          recording={!!onRecordGame && players.some((p) => p.deckId)}
+          recording={!!onRecordGame && players.some((p) => (p.commander || "").trim())}
           onNewGame={() => {
             fileResult();
             setWinnerSeen(true);

@@ -10,6 +10,8 @@
 
 export const LIFE_STARTING = { commander: 40, normal: 20 };
 export const LIFE_STORAGE_KEY = "hk-life-tracker";
+export const LIFE_GAMES_KEY = "hk-life-games";
+const GAMES_KEPT = 500;
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 10;
 
@@ -143,8 +145,8 @@ export function clampScale(v) {
  *
  * This is the one place the Life Counter touches the rest of the app, and it
  * does it by handing over a plain object rather than by importing anything: a
- * seat carries the deck it was piloting only if someone said so, and a game
- * where nobody named a deck is still a game worth having in the log.
+ * seat carries the commander it was playing only if someone typed one, and a
+ * game where nobody did is still a game worth having in the log.
  *
  * Places are read off elimination order — the last one knocked out came
  * second — which is why setOut stamps a time.
@@ -166,13 +168,34 @@ export function gameResult(players, { format = "commander", startedAt = null, at
     seats: ordered.map((p, i) => ({
       name: p.name,
       deckId: p.deckId || null,
-      deckName: p.deckName || null,
+      // The commander is free text, so it travels as the deck's name; there is
+      // no deck in the collection behind it unless an older save put one there.
+      deckName: (p.commander || "").trim() || p.deckName || null,
       life: p.life,
       out: !!p.out,
       place: winner ? i + 1 : null,
       won: !!winner && p.id === winner.id,
     })),
   };
+}
+
+// What a seat is called on its tile: its own name, plus the commander when the
+// two differ ("Mike · Atraxa"). A seat whose commander *is* its name shows it once.
+export function seatLabel(p) {
+  const c = (p.commander || "").trim();
+  const base = c && c !== p.name ? `${p.name} · ${c}` : p.name;
+  return p.out ? `${base} · out` : base;
+}
+
+// Typing a commander into a seat whose name hasn't been filled in — blank, still
+// "Player 3", or still the previous commander — renames the seat to the
+// commander. A name somebody actually typed is left alone, and clearing the
+// commander puts a seat that was following it back to "Player N".
+export function withCommander(player, index, text) {
+  const prev = (player.commander || "").trim();
+  const next = text.trim();
+  const unnamed = !player.name.trim() || /^Player \d+$/.test(player.name) || (prev && player.name === prev);
+  return { ...player, commander: text, name: unnamed ? next || `Player ${index + 1}` : player.name };
 }
 
 // Saves from before counters, colours and partners existed are missing those
@@ -383,4 +406,89 @@ export function rollsById(result) {
   const out = {};
   for (const round of result.rounds) for (const r of round.rolls) out[r.id] = r.roll;
   return out;
+}
+
+// ---- finished games and what they add up to ----------------------------------
+
+// The counter keeps its own list of finished games, apart from any deck's
+// record, so the table's history is there whether or not anyone's commander is
+// in a collection.
+export function loadGames() {
+  try {
+    const g = JSON.parse(localStorage.getItem(LIFE_GAMES_KEY));
+    return Array.isArray(g) ? g : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// Only a game somebody won is history; a table that gave up half way isn't.
+export function saveGame(game) {
+  if (!game || !game.winnerName) return loadGames();
+  const games = loadGames().filter((g) => g.id !== game.id);
+  games.push({ id: game.id, at: game.at, format: game.format, winnerName: game.winnerName, synced: false, seats: game.seats.map((s) => ({ name: s.name, commander: s.deckName || null, won: !!s.won })) });
+  const kept = games.slice(-GAMES_KEPT);
+  try {
+    localStorage.setItem(LIFE_GAMES_KEY, JSON.stringify(kept));
+  } catch (e) {}
+  return kept;
+}
+
+// Remember which games the server has, so they aren't sent twice.
+export function markGamesSynced(ids) {
+  const set = new Set(ids);
+  try {
+    localStorage.setItem(LIFE_GAMES_KEY, JSON.stringify(loadGames().map((g) => (set.has(g.id) ? { ...g, synced: true } : g))));
+  } catch (e) {}
+}
+
+export function clearGames() {
+  try {
+    localStorage.removeItem(LIFE_GAMES_KEY);
+  } catch (e) {}
+}
+
+// A seat counts as a named player only if somebody filled the name in: not
+// "Player 3", and not a name that is just its commander's, copied across.
+export function isNamedPlayer(seat) {
+  const n = (seat.name || "").trim();
+  if (!n || /^Player \d+$/i.test(n)) return false;
+  return !(seat.commander && n.toLowerCase() === seat.commander.trim().toLowerCase());
+}
+
+const tally = (map, key) => {
+  const k = key.toLowerCase();
+  if (!map.has(k)) map.set(k, { name: key, games: 0, wins: 0 });
+  return map.get(k);
+};
+
+export function lifeStats(games) {
+  const players = new Map();
+  const commanders = new Map();
+  for (const g of games) {
+    const seen = new Set();
+    for (const s of g.seats || []) {
+      if (isNamedPlayer(s)) {
+        const t = tally(players, s.name.trim());
+        if (!seen.has("p" + t.name.toLowerCase())) {
+          seen.add("p" + t.name.toLowerCase());
+          t.games += 1;
+          if (s.won) t.wins += 1;
+        }
+      }
+      if (s.commander && s.commander.trim()) {
+        const t = tally(commanders, s.commander.trim());
+        t.games += 1;
+        if (s.won) t.wins += 1;
+      }
+    }
+  }
+  const order = (a, b) => b.wins - a.wins || b.games - a.games || a.name.localeCompare(b.name);
+  const rate = (t) => ({ ...t, rate: t.games ? Math.round((t.wins / t.games) * 100) : 0 });
+  return {
+    games: games.length,
+    players: [...players.values()].map(rate).sort(order),
+    commanders: [...commanders.values()].map(rate).sort(order),
+    recent: [...games].sort((a, b) => b.at - a.at).slice(0, 10),
+  };
 }

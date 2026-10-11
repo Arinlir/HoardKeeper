@@ -168,6 +168,17 @@ function createAccounts({ dataDir, env = process.env, json, readBody, guard, cli
       user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
       created INTEGER NOT NULL
     );
+    -- Finished Life Counter games, shared by everyone on this server so the
+    -- table's stats don't depend on whose phone was running the counter. The
+    -- submitting account is kept only so a deleted account's games can be told
+    -- apart from the rest; it is never sent out.
+    CREATE TABLE IF NOT EXISTS life_games (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      at INTEGER NOT NULL,
+      data TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS life_games_at ON life_games(at);
   `);
   // The public handle: the name that /w/<handle> and /v/<handle> and the
   // playgroup use. Optional — an account with none shares nothing. Added to
@@ -183,6 +194,25 @@ function createAccounts({ dataDir, env = process.env, json, readBody, guard, cli
     if (!db.prepare("PRAGMA table_info(users)").all().some((c) => c.name === col)) db.exec(`ALTER TABLE users ADD COLUMN ${col} ${def}`);
   }
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_handle ON users(handle) WHERE handle IS NOT NULL");
+
+  const LIFE_SERVED = 1000; // games sent per request
+  const LIFE_KEPT = 20000; // games kept on the server
+  const lifeGames = {
+    insert: db.prepare("INSERT OR IGNORE INTO life_games (id, user_id, at, data) VALUES (?, ?, ?, ?)"),
+    recent: db.prepare("SELECT id, at, data FROM life_games ORDER BY at DESC LIMIT ?"),
+    trim: db.prepare("DELETE FROM life_games WHERE id IN (SELECT id FROM life_games ORDER BY at DESC LIMIT -1 OFFSET ?)"),
+  };
+  const lifeText = (v) => (typeof v === "string" ? v.trim().slice(0, 60) : "");
+  // Only the fields the stats read, with sane sizes; anything else is dropped.
+  function cleanLifeGame(g) {
+    if (!g || typeof g !== "object") return null;
+    const id = typeof g.id === "string" && /^[\w.-]{1,64}$/.test(g.id) ? g.id : null;
+    const at = Number.isFinite(g.at) && g.at > 0 && g.at < Date.now() + 86400000 ? Math.floor(g.at) : null;
+    if (!id || !at || !Array.isArray(g.seats) || g.seats.length < 2 || g.seats.length > 8) return null;
+    const seats = g.seats.map((s) => ({ name: lifeText(s?.name), commander: lifeText(s?.commander) || null, won: s?.won === true }));
+    if (seats.some((s) => !s.name) || seats.filter((s) => s.won).length !== 1) return null;
+    return { id, at, format: g.format === "normal" ? "normal" : "commander", winnerName: seats.find((s) => s.won).name, seats };
+  }
 
   const q = {
     userByEmail: db.prepare("SELECT * FROM users WHERE email = ?"),
@@ -498,7 +528,8 @@ function createAccounts({ dataDir, env = process.env, json, readBody, guard, cli
     const isAuth = p.startsWith("/api/auth/");
     const isStore = p === "/api/store";
     const isProfiles = p === "/api/profiles";
-    if (!isAuth && !isStore && !isProfiles) return false;
+    const isLife = p === "/api/life/games";
+    if (!isAuth && !isStore && !isProfiles && !isLife) return false;
 
     const who = currentSession(req);
     // CSRF: cookie-authenticated (or anonymous) writes need the app's header.
@@ -724,6 +755,34 @@ function createAccounts({ dataDir, env = process.env, json, readBody, guard, cli
     const me = who.user;
 
     if (p === "/api/auth/me" && method === "GET") return json(res, 200, { user: publicUser(me) }), true;
+
+    // Life Counter results, server-wide. Any signed-in account may add finished
+    // games and read the lot; names are whatever was typed at the table.
+    if (isLife && method === "GET") {
+      const rows = lifeGames.recent.all(LIFE_SERVED);
+      const games = rows.map((r) => {
+        try {
+          return { id: r.id, at: r.at, ...JSON.parse(r.data) };
+        } catch (e) {
+          return null;
+        }
+      });
+      return json(res, 200, { games: games.filter(Boolean) }), true;
+    }
+    if (isLife && method === "POST") {
+      const b = await body(req, res);
+      if (!b) return true;
+      const list = Array.isArray(b.games) ? b.games.slice(0, 50) : [];
+      let stored = 0;
+      for (const g of list) {
+        const clean = cleanLifeGame(g);
+        if (!clean) continue;
+        const r = lifeGames.insert.run(clean.id, me.id, clean.at, JSON.stringify({ format: clean.format, winnerName: clean.winnerName, seats: clean.seats }));
+        stored += r.changes;
+      }
+      if (stored) lifeGames.trim.run(LIFE_KEPT);
+      return json(res, 200, { ok: true, stored }), true;
+    }
 
     // The names on this server that share something (playgroup). Signed-in
     // users only: it's a list of people.

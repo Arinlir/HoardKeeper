@@ -167,7 +167,8 @@ A plain-language guide to **~40 keywords and mechanics** — but only the ones t
 - 🎲 **d4–d20**, coin flip, and **Who starts**: every seat goes dark and shows its roll, the winner lights up with the stars, and ties reroll among the tied players only
 - 🪦 Knock a seat out (and bring it back); when one player is left, the game is called
 - ↩️ **Undo** any change — including a layout change — and a **game log** of rolls, eliminations and exact totals
-- 🃏 Name the **deck in each seat** and the finished game lands on that deck's record — wins, losses and who it beat
+- 🃏 Give each seat a **commander** — free text, nothing to do with your collection, so it works for the friends who play cards you don't own, and what you type is checked against real cards (tap a suggestion for the exact name). A seat with no name takes its commander's name
+- 📊 **Stats** in the menu keeps every finished game and shows wins per player (only seats whose name is filled in) and per commander, plus the latest games — for this device, or for the **whole server** (every signed-in account shares one list of finished games)
 - 💫 Floating damage/heal indicators — rapid taps accumulate into one number, linger while you keep tapping, then fade away once you stop
 - 💾 Layout, colours, names, partners and counters survive a reload
 

@@ -1,7 +1,23 @@
 # Changelog
 
-Everything since the last GitHub update (2026-08-25, `d4b5fc8` — the Ink & Slate redesign).
+Everything since the v1.3 release (2026-08-17). Release notes for v2.0 are on the GitHub releases page.
 Newest first. The repository keeps its old name, HoardKeeper; the app is now **Binderwyrm**.
+
+## 2026-10-12 — Free-text commanders, Stats
+
+### Added
+- **Commander per seat, typed in** (replaces "pick a deck for the seat"). Any commander, not tied to
+  your collection, so it works for friends who play cards you don't own. It is checked against real
+  cards as you type: matching commanders are offered as buttons, a "Real card" tick appears on a
+  match, and anything that isn't a card is kept as typed. Cards that "can be your commander" count.
+- **Seat name follows the commander**: a seat whose name isn't filled in takes the commander's name;
+  a name somebody typed is kept and the commander is shown beside it.
+- **Stats** in the Life counter menu: wins per player (only seats with a name filled in), wins per
+  commander and the latest games, for **this device** or the **whole server** (every signed-in
+  account shares one list of finished games). `GET/POST /api/life/games`, stored in `accounts.db`.
+
+### Changed
+- Finished games no longer land on a collection deck's record; the commander is recorded by name.
 
 ## 2026-10 — Precon import, Life counter partners, accounts hardening
 
@@ -11,7 +27,7 @@ Newest first. The repository keeps its old name, HoardKeeper; the app is now **B
   and extras included, optionally into a new collection named after the deck.
 - **Life counter: two commanders per seat.** A partner deck shows commanders A and B; commander
   damage is counted per commander, and in your own seat you choose which one is dealing it.
-  Assigning a deck sets this up automatically.
+  Switching a seat to partners sets this up.
 - **Commanders and partners** in the deck builder: Partner, Partner with, Friends forever,
   Choose a Background, Doctor's companion; combined colour identity.
 - **Sub-collections** (nested collections with rolled-up totals).

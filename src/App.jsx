@@ -2080,7 +2080,6 @@ export default function App() {
         <Suspense fallback={<ViewLoading />}>
           <LifeCounterView
             onExit={() => setView("collection")}
-            decks={decks}
             onRecordGame={(g) => setGames((prev) => addGame(prev, g))}
           />
         </Suspense>
